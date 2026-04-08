@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-assistant"
+version = "0.1.0"
+description = "MCP Integrated Terminal Assistant — offline AI-augmented CLI"
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.32",
+    "pydantic>=2.10",
+]
+
+[project.optional-dependencies]
+tui = ["textual", "rich"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov"]
+
+[project.scripts]
+mcp = "mcp_assistant.main:main"
+mcp-eval = "mcp_assistant.eval.harness:cli_main"
+mcp-verify = "mcp_assistant.audit.logger:cli_verify"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mcp_assistant*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_classes = ["Test*"]
+filterwarnings = ["ignore::pytest.PytestCollectionWarning"]

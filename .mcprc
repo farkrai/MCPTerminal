@@ -1,0 +1,26 @@
+[meta]
+schema_version = "1.0"
+project_name = "MCP Terminal Assistant"
+
+[security]
+sandbox_root = "/home/krshrivathsan/MajorProject"
+blocked_paths = ["**/.env", "**/*.pem", "**/*.key", "**/id_rsa", "**/.ssh/**", "**/secrets/**"]
+max_file_size_mb = 10
+
+[tools]
+allowed_tools = ["FileHandler", "GitTool", "SystemTool", "TestRunner"]
+disabled_tools = []
+
+[confirmations]
+confirm_required = ["FileHandler.write", "FileHandler.delete", "GitTool.commit", "SystemTool.kill_process"]
+confirm_all_destructive = true
+
+[behavior]
+dry_run_mode = false
+confidence_threshold = 0.5
+context_window_size = 10
+chain_continue_on_error = false
+
+[audit]
+log_dir = "audit_logs"
+retention_days = 30

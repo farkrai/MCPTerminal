@@ -1,0 +1,1 @@
+# MCP Integrated Terminal Assistant

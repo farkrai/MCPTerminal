@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+audit_logs/*.jsonl
+~/.mcp_assistant/
+*.egg-info/
+dist/
+.coverage
+htmlcov/

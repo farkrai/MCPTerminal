@@ -1,0 +1,137 @@
+{
+  "ablation_label": "category_sample",
+  "model": "phi3:latest",
+  "dataset": "/home/krshrivathsan/MajorProject/eval_data/eval_dataset.json",
+  "context_window": 0,
+  "confidence_threshold": 0.5,
+  "summary": {
+    "total": 5,
+    "tool_accuracy": 1.0,
+    "action_accuracy": 1.0,
+    "parse_failure_rate": 0.0,
+    "hallucination_rate": 0.0,
+    "mean_latency_ms": 5777.6,
+    "p95_latency_ms": 7097.4
+  },
+  "per_category": {
+    "file_ops": {
+      "count": 1,
+      "tool_accuracy": 1.0,
+      "action_accuracy": 1.0,
+      "mean_latency_ms": 3217.4383780002245
+    },
+    "git_ops": {
+      "count": 1,
+      "tool_accuracy": 1.0,
+      "action_accuracy": 1.0,
+      "mean_latency_ms": 6711.74372599944
+    },
+    "system_ops": {
+      "count": 1,
+      "tool_accuracy": 1.0,
+      "action_accuracy": 1.0,
+      "mean_latency_ms": 7087.52395800002
+    },
+    "test_ops": {
+      "count": 1,
+      "tool_accuracy": 1.0,
+      "action_accuracy": 1.0,
+      "mean_latency_ms": 7097.383336999883
+    },
+    "chaining": {
+      "count": 1,
+      "tool_accuracy": 1.0,
+      "action_accuracy": 1.0,
+      "mean_latency_ms": 4773.885362999863
+    }
+  },
+  "per_difficulty": {
+    "easy": {
+      "count": 4,
+      "tool_accuracy": 1.0,
+      "action_accuracy": 1.0
+    },
+    "medium": {
+      "count": 1,
+      "tool_accuracy": 1.0,
+      "action_accuracy": 1.0
+    }
+  },
+  "results": [
+    {
+      "id": 1,
+      "nl_input": "list all files in the current directory",
+      "category": "file_ops",
+      "difficulty": "easy",
+      "gt": "FileHandler.list",
+      "pred": "FileHandler.list",
+      "tool_match": true,
+      "action_match": true,
+      "parse_failed": false,
+      "hallucinated": false,
+      "confidence": 1.0,
+      "latency_ms": 3217.4,
+      "error": null
+    },
+    {
+      "id": 16,
+      "nl_input": "show git status",
+      "category": "git_ops",
+      "difficulty": "easy",
+      "gt": "GitTool.status",
+      "pred": "GitTool.status",
+      "tool_match": true,
+      "action_match": true,
+      "parse_failed": false,
+      "hallucinated": false,
+      "confidence": 1.0,
+      "latency_ms": 6711.7,
+      "error": null
+    },
+    {
+      "id": 31,
+      "nl_input": "how much RAM is being used",
+      "category": "system_ops",
+      "difficulty": "easy",
+      "gt": "SystemTool.ram_stats",
+      "pred": "SystemTool.ram_stats",
+      "tool_match": true,
+      "action_match": true,
+      "parse_failed": false,
+      "hallucinated": false,
+      "confidence": 1.0,
+      "latency_ms": 7087.5,
+      "error": null
+    },
+    {
+      "id": 46,
+      "nl_input": "detect the test framework in this project",
+      "category": "test_ops",
+      "difficulty": "easy",
+      "gt": "TestRunner.detect",
+      "pred": "TestRunner.detect",
+      "tool_match": true,
+      "action_match": true,
+      "parse_failed": false,
+      "hallucinated": false,
+      "confidence": 0.95,
+      "latency_ms": 7097.4,
+      "error": null
+    },
+    {
+      "id": 56,
+      "nl_input": "first show git status then show the diff",
+      "category": "chaining",
+      "difficulty": "medium",
+      "gt": "GitTool.status",
+      "pred": "GitTool.status",
+      "tool_match": true,
+      "action_match": true,
+      "parse_failed": false,
+      "hallucinated": false,
+      "confidence": 1.0,
+      "latency_ms": 4773.9,
+      "error": null
+    }
+  ]
+}
