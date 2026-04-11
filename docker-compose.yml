@@ -1,0 +1,25 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  mcp-assistant:
+    build: .
+    stdin_open: true
+    tty: true
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=phi3:latest
+    depends_on:
+      - ollama
+    volumes:
+      - ./audit_logs:/app/audit_logs
+      - mcp_context:/root/.mcp_assistant
+
+volumes:
+  ollama_data:
+  mcp_context:

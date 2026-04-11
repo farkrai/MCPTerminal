@@ -58,13 +58,15 @@ def _build_call(data: dict, raw: str) -> MCPCall:
     confidence = float(data.get("confidence", 1.0))
     confidence = max(0.0, min(1.0, confidence))
 
-    return MCPCall(
+    call = MCPCall(
         tool=str(data["tool"]),
         action=str(data["action"]),
         params=dict(data.get("params") or {}),
         raw_response=raw,
         confidence=confidence,
     )
+    setattr(call, "_complexity", str(data.get("complexity", "routing")))
+    return call
 
 
 def _build_chain(data: dict, raw: str) -> MCPChain:

@@ -1,13 +1,18 @@
 from __future__ import annotations
 from textual.app import ComposeResult
 from textual.widget import Widget
-from textual.widgets import RichLog
+from textual.widgets import RichLog, Static
 
 
 class HistoryPanel(Widget):
     BORDER_TITLE = "Conversation"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._stream_buffer = ""
+
     def compose(self) -> ComposeResult:
+        yield Static("", id="streaming-line")
         yield RichLog(highlight=True, markup=True, wrap=True, id="history-log")
 
     def add_user(self, text: str) -> None:
@@ -44,3 +49,15 @@ class HistoryPanel(Widget):
     def add_error(self, text: str) -> None:
         log = self.query_one("#history-log", RichLog)
         log.write(f"[bold red]Error:[/bold red] {text}")
+
+    def start_streaming_response(self) -> None:
+        self._stream_buffer = ""
+        self.query_one("#streaming-line", Static).update("Thinking…")
+
+    def append_streaming_token(self, token: str) -> None:
+        self._stream_buffer += token
+        self.query_one("#streaming-line", Static).update(self._stream_buffer or "Thinking…")
+
+    def finish_streaming_response(self) -> None:
+        self._stream_buffer = ""
+        self.query_one("#streaming-line", Static).update("")

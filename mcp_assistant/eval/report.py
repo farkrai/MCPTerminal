@@ -43,9 +43,10 @@ def _render_markdown(report: EvalReport) -> str:
         f"| Action Accuracy      | {s.action_accuracy():.1%}   | > 75%  |",
         f"| Parse Failure Rate   | {s.parse_failure_rate():.1%}   | < 10%  |",
         f"| Hallucination Rate   | {s.hallucination_rate():.1%}   | < 5%   |",
+        f"| Faithfulness Score   | {s.faithfulness_score():.1%}   | > 75%  |",
         f"| Mean Latency         | {s.mean_latency_ms():.0f} ms  | < 3000 ms |",
         f"| P95 Latency          | {s.p95_latency_ms():.0f} ms  | < 6000 ms |",
-        f"| Total Evaluated      | {len(s.results)}    | 60     |",
+        f"| Total Evaluated      | {len(s.results)}    | {len(s.results)}     |",
         f"",
         f"---",
         f"",
@@ -78,6 +79,21 @@ def _render_markdown(report: EvalReport) -> str:
                 f"| {diff:<10} | {m['count']:>5} | {m['tool_accuracy']:.1%}    | "
                 f"{m['action_accuracy']:.1%}      |"
             )
+
+    lines += [
+        "",
+        "---",
+        "",
+        "## Per-Model Breakdown",
+        "",
+        "| Model | Count | Tool Acc | Action Acc |",
+        "|-------|-------|----------|------------|",
+    ]
+
+    for model, m in sorted(s.per_model().items()):
+        lines.append(
+            f"| {model} | {m['count']:>5} | {m['tool_accuracy']:.1%} | {m['action_accuracy']:.1%} |"
+        )
 
     # Latency ASCII histogram
     lines += ["", "---", "", "## Latency Distribution", ""]

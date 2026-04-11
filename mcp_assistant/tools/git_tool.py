@@ -5,19 +5,21 @@ from pathlib import Path
 from mcp_assistant.mcp.base import MCPTool
 from mcp_assistant.mcp.schema import MCPCall, MCPResult
 from mcp_assistant import config
+from mcp_assistant.llm.ecosystem import AVAILABLE
+from mcp_assistant.tools.path_utils import resolve_cwd
 
 
 class GitTool(MCPTool):
     TOOL_NAME = "GitTool"
     TOOL_DESCRIPTION = "Git repository operations: status, diff, log, commit, and branch management."
     SUPPORTED_ACTIONS = {
-        "status":        "Show working tree status. Params: cwd (optional)",
-        "diff":          "Show unstaged or staged diff. Params: cwd, staged (bool, optional)",
-        "log":           "Show recent commit log. Params: cwd, n (int, optional, default 10)",
-        "add":           "Stage files. Params: cwd, path (file or '.' for all)",
-        "commit":        "Commit staged changes. Params: cwd, message [DESTRUCTIVE]",
-        "branch_list":   "List all branches. Params: cwd (optional)",
-        "branch_switch": "Switch branch. Params: cwd, branch [DESTRUCTIVE]",
+        "status":        "Show high-level summary of staged/unstaged changes (like 'git status'). Use when user asks about current state, modified files, or what branch they're on.",
+        "diff":          "Show line-level diff of changes. Use when the user asks WHAT CHANGED, what the differences are, or what is STAGED. Params: staged (bool, optional)",
+        "log":           "Show recent commit history. Params: n (int, default 10)",
+        "add":           "Stage files for commit. Params: path (str)",
+        "commit":        "Commit staged changes. DESTRUCTIVE. Params: message (str)",
+        "branch_list":   "List all branches.",
+        "branch_switch": "Switch to a branch. DESTRUCTIVE. Params: branch (str)",
     }
     DESTRUCTIVE_ACTIONS = {"commit", "branch_switch"}
 
@@ -31,7 +33,18 @@ class GitTool(MCPTool):
             elif action == "diff":
                 staged = call.params.get("staged", False)
                 cmd = ["git", "diff", "--cached"] if staged else ["git", "diff"]
-                out = self._run(cmd, cwd)
+                raw = subprocess.run(cmd, capture_output=True, cwd=cwd)
+                if raw.returncode != 0:
+                    raise subprocess.CalledProcessError(raw.returncode, cmd, raw.stdout, raw.stderr)
+                if AVAILABLE["delta"] and raw.stdout:
+                    enhanced = subprocess.run(
+                        ["delta", "--color-only"],
+                        input=raw.stdout,
+                        capture_output=True,
+                    )
+                    out = enhanced.stdout.decode("utf-8", errors="replace")
+                else:
+                    out = raw.stdout.decode("utf-8", errors="replace")
                 if not out.strip():
                     out = "(No changes)" if not staged else "(Nothing staged)"
             elif action == "log":
@@ -96,9 +109,9 @@ class GitTool(MCPTool):
 
     def _resolve_cwd(self, cwd: str | None) -> Path:
         if cwd:
-            p = Path(cwd)
-            return p if p.is_absolute() else config.PROJECT_ROOT / p
-        return config.PROJECT_ROOT
+            p = Path(resolve_cwd(cwd))
+            return p if p.is_absolute() else config.WORKSPACE_DIR / p
+        return config.WORKSPACE_DIR
 
 
 def _ms(start: float) -> float:

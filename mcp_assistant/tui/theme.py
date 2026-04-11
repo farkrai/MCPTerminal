@@ -46,6 +46,12 @@ HistoryPanel {
     padding: 0 1;
 }
 
+#streaming-line {
+    height: auto;
+    color: $text-muted;
+    padding: 0 1;
+}
+
 /* ── Input bar (center, bottom) ─────────────────────────────────────────── */
 InputBar {
     height: 3;
@@ -83,6 +89,33 @@ ToolInspector .inspector-key   { color: $accent; }
 ToolInspector .inspector-val   { color: $text; }
 ToolInspector .inspector-ok    { color: $success; text-style: bold; }
 ToolInspector .inspector-err   { color: $error; text-style: bold; }
+
+ConfirmModal {
+    align: center middle;
+}
+
+#confirm-dialog {
+    width: 70;
+    max-height: 30;
+    border: round $warning;
+    background: $surface;
+    padding: 1 2;
+    layout: vertical;
+}
+
+#preview {
+    height: auto;
+    max-height: 16;
+    overflow-y: auto;
+    border: round $accent-darken-1;
+    padding: 1;
+    margin-bottom: 1;
+}
+
+#confirm-buttons {
+    align-horizontal: center;
+    height: auto;
+}
 
 /* ── History entry styles ────────────────────────────────────────────────── */
 .history-user      { color: $accent; text-style: bold; }

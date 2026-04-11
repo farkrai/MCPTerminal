@@ -1,4 +1,5 @@
 import json
+import mcp_assistant.config as cfg
 from mcp_assistant.context.buffer import ConversationBuffer
 
 
@@ -59,3 +60,23 @@ def test_get_context_n():
         buf.add_turn("assistant", f"a{i}")
     ctx = buf.get_context(n=2)
     assert len(ctx) == 4  # last 2 pairs = 4 turns
+
+
+def test_get_context_respects_token_budget(monkeypatch):
+    monkeypatch.setattr(cfg, "MAX_CONTEXT_TOKENS", 10)
+
+    buf = ConversationBuffer(max_turns=10)
+    for i in range(4):
+        buf.add_turn("user", f"user message {i} with lots of text")
+        buf.add_turn("assistant", f"assistant response {i} with lots of text")
+
+    ctx = buf.get_context()
+    assert len(ctx) < 8
+
+
+def test_context_token_count(monkeypatch):
+    monkeypatch.setattr(cfg, "MAX_CONTEXT_TOKENS", 1000)
+    buf = ConversationBuffer(max_turns=5)
+    buf.add_turn("user", "hello world")
+    buf.add_turn("assistant", "response text")
+    assert buf.context_token_count() > 0

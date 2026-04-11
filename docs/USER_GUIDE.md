@@ -20,7 +20,10 @@
 10. [Dry-Run Mode](#10-dry-run-mode)
 11. [Audit Log](#11-audit-log)
 12. [Running the Evaluator](#12-running-the-evaluator)
-13. [Troubleshooting](#13-troubleshooting)
+13. [Docker Quickstart](#13-docker-quickstart)
+14. [Optional Enhancements](#14-optional-enhancements)
+15. [Claude Desktop / FastMCP](#15-claude-desktop--fastmcp)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -43,26 +46,101 @@ Everything runs **locally**. Your code and queries never leave your machine.
 
 ## 2. Starting the Assistant
 
-Make sure Ollama is running first:
+### Prerequisites
+
+- Python **3.11 or newer** is required.
+- Ollama must be installed locally.
+
+Recommended setup from the project root:
+
+```bash
+cd <project-root>
+/opt/homebrew/bin/python3.11 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+
+# TUI + CLI
+python -m pip install -e ".[tui]"
+
+# Optional: FastMCP server wrapper
+# python -m pip install -e ".[server]"
+```
+
+If you prefer a plain requirements install instead of package extras:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Workspace scope:
+- By default, tool access is sandboxed to your user workspace root (`~`).
+- To use a different workspace root, set `MCP_WORKSPACE` before launch.
+
+Example:
+
+```bash
+export MCP_WORKSPACE=~/Documents
+```
+
+### Start Ollama
+
+Make sure Ollama is running first. If `ollama serve` says the port is already
+in use, Ollama is already running and you can continue.
 
 ```bash
 ollama serve
 ```
 
-Then launch the assistant from the project root:
+Pull the default local model once:
 
 ```bash
-cd /home/krshrivathsan/MajorProject
+ollama pull dolphin-mistral:latest
+```
 
+### Launch the Assistant
+
+Then launch the assistant:
+
+```bash
 # TUI (recommended — full visual interface)
-venv/bin/python -m mcp_assistant.main
+python -m mcp_assistant.main
 
 # Plain CLI (no TUI, text only)
-venv/bin/python -m mcp_assistant.main --cli
+python -m mcp_assistant.main --cli
 ```
 
 You will see the three-panel TUI appear. The input bar is at the bottom center.
 Type your command and press **Enter**.
+
+The assistant now routes every request through the orchestration graph:
+`classify -> planner -> router/direct -> aggregate -> finalize`.
+If the request can be answered directly, it avoids MCP tools; if it depends on
+workspace, git, tests, or system state, it routes into MCP execution and then
+aggregates the result into a structured response.
+
+For a clean test session, clear old memory right after launch:
+
+```text
+!context clear
+```
+
+In the TUI you can also press `Ctrl+L`.
+
+To override model roles later, set any of these before launch:
+
+```bash
+export OLLAMA_MODEL=dolphin-mistral:latest
+export CLASSIFIER_MODEL=dolphin-mistral:latest
+export PLANNER_MODEL=dolphin-mistral:latest
+export ROUTER_MODEL=dolphin-mistral:latest
+export AGGREGATOR_MODEL=dolphin-mistral:latest
+```
+
+You can also clear the structured LLM cache at any time with:
+
+```bash
+mcp-cache clear
+```
 
 ---
 
@@ -141,9 +219,10 @@ Type `yes` to proceed, or rephrase your command.
 | `write hello world to notes.txt` | Creates or overwrites a file *(asks for confirmation)* |
 | `delete temp.txt` | Deletes a file *(asks for confirmation)* |
 
-> **Sandboxed:** All file operations are restricted to
-> `/home/krshrivathsan/MajorProject`. Paths outside this directory, `.env`
-> files, keys, and certificates are always blocked.
+> **Sandboxed:** File operations are restricted to the active workspace root.
+> By default this is your user workspace (`~`). You can override it with
+> `MCP_WORKSPACE` or by setting `sandbox_root` in `.mcprc`.
+> Sensitive files like `.env`, keys, and SSH material are still blocked.
 
 ---
 
@@ -238,6 +317,7 @@ These are typed into the input bar with a `!` prefix:
 | `!dry-run off` | Turn off dry-run mode |
 | `!context` | Show the last few conversation turns the AI remembers |
 | `!context clear` | Wipe the conversation context (AI forgets prior exchanges) |
+| `!cache clear` | Clears the on-disk LLM response cache |
 | `!verify` | Verify today's audit log has not been tampered with |
 
 ---
@@ -257,9 +337,10 @@ These are typed into the input bar with a `!` prefix:
 ## 9. Safety — What Is and Isn't Allowed
 
 The assistant enforces a policy loaded from `.mcprc` in the project root.
+That policy controls the workspace sandbox used by file, git, and test tools.
 
 **Always blocked (regardless of what you ask):**
-- Any path outside `/home/krshrivathsan/MajorProject`
+- Any path outside the active workspace sandbox
 - `.env` files, private keys (`.pem`, `.key`, `id_rsa`), SSH directories
 - Files larger than 10 MB
 
@@ -315,7 +396,7 @@ via `retention_days` in `.mcprc`).
 ## 12. Running the Evaluator
 
 The evaluator measures how accurately the AI maps natural-language commands to
-the correct tool and action, across a dataset of 60 test cases.
+the correct tool and action, across a dataset of 80 test cases.
 
 **Single run (no context window):**
 ```bash
@@ -344,7 +425,62 @@ output directory.
 
 ---
 
-## 13. Troubleshooting
+## 13. Docker Quickstart
+
+```bash
+docker compose up -d ollama
+docker compose exec ollama ollama pull dolphin-mistral:latest
+docker compose run --rm mcp-assistant
+```
+
+The assistant container talks to Ollama over the internal `ollama` service
+name, so no extra configuration is needed.
+
+---
+
+## 14. Optional Enhancements
+
+The assistant automatically detects and uses these tools if installed:
+
+| Tool | Install | What it enhances |
+|---|---|---|
+| `ripgrep` | `brew install ripgrep` | File search (much faster than Python glob) |
+| `bat` | `brew install bat` | File display with syntax highlighting |
+| `git-delta` | `brew install git-delta` | Syntax-highlighted git diffs |
+| `eza` | `brew install eza` | Rich directory listings |
+| `fd` | `brew install fd` | Faster file finding |
+| `zoxide` | `brew install zoxide` | Fuzzy working-directory resolution |
+
+None are required. The assistant still works with the pure-Python fallbacks.
+
+---
+
+## 15. Claude Desktop / FastMCP
+
+If you install the server extra, the project can expose its tools through the
+official MCP protocol:
+
+```bash
+python -m pip install -e ".[server]"
+python -m mcp_assistant.fastmcp_server
+```
+
+Example Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "terminal-assistant": {
+      "command": "python",
+      "args": ["-m", "mcp_assistant.fastmcp_server"]
+    }
+  }
+}
+```
+
+---
+
+## 16. Troubleshooting
 
 | Problem | Fix |
 |---|---|

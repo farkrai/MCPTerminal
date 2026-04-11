@@ -457,7 +457,7 @@ The `.mcprc` file in the project root is loaded at startup using
 
 ```toml
 [security]
-sandbox_root = "/home/krshrivathsan/MajorProject"
+sandbox_root = ""  # empty = use config.WORKSPACE_DIR (defaults to ~/)
 blocked_paths = ["**/.env", "**/*.pem", "**/*.key", "**/id_rsa", "**/.ssh/**"]
 max_file_size_mb = 10
 
@@ -616,7 +616,7 @@ dispatch stack without the LLM.
 
 ```bash
 # 1. Clone / enter project
-cd /home/krshrivathsan/MajorProject
+cd <project-root>
 
 # 2. Create venv (if not already present)
 python3.13 -m venv venv
@@ -654,17 +654,19 @@ mcp-verify    # audit chain verifier
 
 ## 12. Known Limitations and Design Decisions
 
-### phi3 Latency
-phi3 3.8B Q4_0 takes 3–8 seconds per response on CPU. This is expected. If
-latency needs to improve:
-- Use a GPU-accelerated Ollama setup (`ollama run phi3:latest` with CUDA)
-- Switch to a smaller model (`phi3:mini`) — accuracy will drop
+### Default Model Latency
+`dolphin-mistral:latest` is the current default for all orchestration roles.
+CPU-only latency will still be noticeable on larger prompts. If latency needs
+to improve:
+- Use a GPU-accelerated Ollama setup (`ollama run dolphin-mistral:latest` with CUDA)
+- Switch the classifier/planner/router roles to a smaller model
 - Use `generate_stream()` and show tokens as they arrive in the TUI
 
 ### Chain Detection
-phi3 does not reliably emit chain JSON for every multi-step request. The
-prompt engineering in `prompt_builder.py` uses explicit trigger words ("then",
-"first...then") and examples. If chain detection is still unreliable:
+Smaller local models do not always emit chain JSON for every multi-step
+request. The prompt engineering in `prompt_builder.py` uses explicit trigger
+words ("then", "first...then") and examples. If chain detection is still
+unreliable:
 - Try a larger model (llama3 8B or larger)
 - Add a pre-processing step that detects multi-step keywords and hard-codes
   a chain prompt variant
@@ -709,9 +711,9 @@ Replace the auto-confirm `lambda _: True` with a `textual` modal screen
 the user responds. This makes destructive-op confirmation visible in the UI.
 
 **3. Larger or smarter model**
-Swap phi3 for `llama3.1:8b` or `deepseek-coder:6.7b`. The dataset + harness
-are model-agnostic — just change `OLLAMA_MODEL` in `config.py` or set the
-env var.
+The orchestration roles are model-agnostic. Change `OLLAMA_MODEL` for a global
+default, or set `CLASSIFIER_MODEL`, `PLANNER_MODEL`, `ROUTER_MODEL`, and
+`AGGREGATOR_MODEL` independently.
 
 **4. Docker Tool**
 Add `plugins/docker_tool/tool.py` with actions: `list_containers`,

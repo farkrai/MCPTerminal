@@ -26,6 +26,8 @@ class ToolInspector(Widget):
         log.write(f"  [cyan]tool   :[/cyan] {call.tool}")
         log.write(f"  [cyan]action :[/cyan] {call.action}")
         log.write(f"  [cyan]conf   :[/cyan] {call.confidence:.2f}")
+        if result.model_used:
+            log.write(f"  [cyan]model  :[/cyan] {result.model_used}")
 
         if call.params:
             params_str = json.dumps(call.params, indent=4)
@@ -59,6 +61,12 @@ class ToolInspector(Widget):
                 for line in preview.splitlines():
                     log.write(f"    {line}")
             log.write("")
+
+        last_data = results[-1].data if results else None
+        if isinstance(last_data, dict) and "chain_summary" in last_data:
+            summary = last_data["chain_summary"]
+            log.write("[bold cyan]CHAIN SUMMARY[/bold cyan]")
+            log.write(f"  {summary.get('summary', '')}")
 
     def show_clarification(self, tool: str, action: str, confidence: float) -> None:
         log = self.query_one("#inspector-log", RichLog)

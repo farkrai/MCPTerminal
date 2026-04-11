@@ -12,7 +12,7 @@ from mcp_assistant import config
 
 def test_file_list(policy):
     tool = FileHandler(policy)
-    call = MCPCall(tool="FileHandler", action="list", params={"path": "."})
+    call = MCPCall(tool="FileHandler", action="list", params={"path": str(config.PROJECT_ROOT)})
     result = tool.execute(call)
     assert result.success
     assert "mcp_assistant" in result.output
@@ -20,7 +20,11 @@ def test_file_list(policy):
 
 def test_file_read_existing(policy):
     tool = FileHandler(policy)
-    call = MCPCall(tool="FileHandler", action="read", params={"path": "requirements.txt"})
+    call = MCPCall(
+        tool="FileHandler",
+        action="read",
+        params={"path": str(config.PROJECT_ROOT / "requirements.txt")},
+    )
     result = tool.execute(call)
     assert result.success
     assert result.data is not None
@@ -77,7 +81,7 @@ def test_file_unknown_action(policy):
 
 def test_git_status():
     tool = GitTool()
-    call = MCPCall("GitTool", "status", {})
+    call = MCPCall("GitTool", "status", {"cwd": str(config.PROJECT_ROOT)})
     result = tool.execute(call)
     assert result.success
     assert "branch" in result.output.lower()
@@ -85,21 +89,21 @@ def test_git_status():
 
 def test_git_log():
     tool = GitTool()
-    call = MCPCall("GitTool", "log", {"n": 5})
+    call = MCPCall("GitTool", "log", {"n": 5, "cwd": str(config.PROJECT_ROOT)})
     result = tool.execute(call)
     assert result.success
 
 
 def test_git_branch_list():
     tool = GitTool()
-    call = MCPCall("GitTool", "branch_list", {})
+    call = MCPCall("GitTool", "branch_list", {"cwd": str(config.PROJECT_ROOT)})
     result = tool.execute(call)
     assert result.success
 
 
 def test_git_commit_no_message():
     tool = GitTool()
-    call = MCPCall("GitTool", "commit", {})
+    call = MCPCall("GitTool", "commit", {"cwd": str(config.PROJECT_ROOT)})
     result = tool.execute(call)
     assert not result.success
     assert "message" in result.error.lower()
@@ -152,7 +156,7 @@ def test_system_env_info():
 
 def test_runner_detect():
     tool = TestRunner()
-    call = MCPCall("TestRunner", "detect", {"cwd": "."})
+    call = MCPCall("TestRunner", "detect", {"cwd": str(config.PROJECT_ROOT)})
     result = tool.execute(call)
     assert result.success
     assert "pytest" in result.output.lower()

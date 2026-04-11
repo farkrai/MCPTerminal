@@ -33,6 +33,8 @@ class EvalResult:
     # Performance
     latency_ms: float
     error: str | None = None
+    faithfulness_score: float | None = None
+    model_used: str = ""
 
 
 @dataclass
@@ -78,6 +80,10 @@ class EvalReport:
         idx = int(0.95 * len(lats))
         return lats[min(idx, len(lats) - 1)]
 
+    def faithfulness_score(self) -> float:
+        scored = [r.faithfulness_score for r in self.results if r.faithfulness_score is not None]
+        return sum(scored) / len(scored) if scored else 0.0
+
     def per_category(self) -> dict[str, dict]:
         categories: dict[str, list[EvalResult]] = {}
         for r in self.results:
@@ -107,6 +113,21 @@ class EvalReport:
             }
         return out
 
+    def per_model(self) -> dict[str, dict]:
+        buckets: dict[str, list[EvalResult]] = {}
+        for r in self.results:
+            key = r.model_used or "(unknown)"
+            buckets.setdefault(key, []).append(r)
+        out: dict[str, dict] = {}
+        for model, items in buckets.items():
+            valid = [r for r in items if not r.parse_failed]
+            out[model] = {
+                "count": len(items),
+                "tool_accuracy": sum(r.tool_match for r in valid) / len(valid) if valid else 0.0,
+                "action_accuracy": sum(r.action_match for r in valid) / len(valid) if valid else 0.0,
+            }
+        return out
+
     def failures(self) -> list[EvalResult]:
         return [r for r in self.results if not r.action_match or r.parse_failed]
 
@@ -125,9 +146,11 @@ class EvalReport:
                 "hallucination_rate": round(self.hallucination_rate(), 4),
                 "mean_latency_ms": round(self.mean_latency_ms(), 1),
                 "p95_latency_ms": round(self.p95_latency_ms(), 1),
+                "faithfulness_score": round(self.faithfulness_score(), 4),
             },
             "per_category": self.per_category(),
             "per_difficulty": self.per_difficulty(),
+            "per_model": self.per_model(),
             "results": [
                 {
                     "id": r.item_id,
@@ -142,6 +165,8 @@ class EvalReport:
                     "hallucinated": r.hallucinated,
                     "confidence": round(r.pred_confidence, 3),
                     "latency_ms": round(r.latency_ms, 1),
+                    "faithfulness_score": r.faithfulness_score,
+                    "model_used": r.model_used,
                     "error": r.error,
                 }
                 for r in self.results
@@ -169,6 +194,7 @@ def build_eval_result(
             tool_match=False, action_match=False,
             parse_failed=True, hallucinated=False,
             latency_ms=latency_ms, error=error,
+            model_used="",
         )
 
     if isinstance(parsed, MCPChain):
@@ -201,4 +227,5 @@ def build_eval_result(
         tool_match=tool_match, action_match=action_match,
         parse_failed=False, hallucinated=hallucinated,
         latency_ms=latency_ms, error=error,
+        model_used=getattr(parsed, "_model_used", ""),
     )

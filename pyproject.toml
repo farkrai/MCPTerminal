@@ -6,20 +6,26 @@ build-backend = "setuptools.build_meta"
 name = "mcp-assistant"
 version = "0.1.0"
 description = "MCP Integrated Terminal Assistant — offline AI-augmented CLI"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "requests>=2.32",
     "pydantic>=2.10",
+    "psutil>=6.1",
+    "langgraph>=0.2",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
 tui = ["textual", "rich"]
+server = ["fastmcp>=0.4.0"]
 dev = ["pytest", "pytest-asyncio", "pytest-cov"]
 
 [project.scripts]
 mcp = "mcp_assistant.main:main"
 mcp-eval = "mcp_assistant.eval.harness:cli_main"
 mcp-verify = "mcp_assistant.audit.logger:cli_verify"
+mcp-cache = "mcp_assistant.llm.cache:_cli"
+mcp-server = "mcp_assistant.fastmcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

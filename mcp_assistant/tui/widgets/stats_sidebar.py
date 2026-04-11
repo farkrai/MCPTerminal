@@ -15,6 +15,7 @@ class StatsSidebar(Widget):
     _ram_used: reactive[str] = reactive("0 GB")
     _ram_total: reactive[str] = reactive("0 GB")
     _disk_pct: reactive[float] = reactive(0.0)
+    _context_tokens: reactive[int] = reactive(0)
 
     def compose(self) -> ComposeResult:
         yield Static("CPU", classes="stats-label")
@@ -38,6 +39,10 @@ class StatsSidebar(Widget):
         yield Static(" ", classes="stats-label")
         yield Static("PROCS", classes="stats-label")
         yield Static("", id="procs-val", classes="stats-value")
+
+        yield Static(" ", classes="stats-label")
+        yield Static("CTX", classes="stats-label")
+        yield Static("", id="ctx-val", classes="stats-value")
 
     def on_mount(self) -> None:
         self.refresh_stats()
@@ -79,3 +84,8 @@ class StatsSidebar(Widget):
 
         except Exception:
             pass
+
+    def set_context_tokens(self, tokens: int) -> None:
+        self._context_tokens = tokens
+        if self.is_mounted:
+            self.query_one("#ctx-val", Static).update(f"{tokens} tok")

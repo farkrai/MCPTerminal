@@ -14,7 +14,7 @@ DATASET_PATH = config.PROJECT_ROOT / "eval_data" / "eval_dataset.json"
 
 def test_dataset_loads():
     items = load_dataset(DATASET_PATH)
-    assert len(items) == 60
+    assert len(items) == 80
 
 
 def test_dataset_categories():
@@ -46,9 +46,9 @@ def test_dataset_counts_per_category():
     counts = {}
     for i in items:
         counts[i.category] = counts.get(i.category, 0) + 1
-    assert counts["file_ops"] == 15
-    assert counts["git_ops"] == 15
-    assert counts["system_ops"] == 15
+    assert counts["file_ops"] == 25
+    assert counts["git_ops"] == 20
+    assert counts["system_ops"] == 20
     assert counts["test_ops"] == 10
     assert counts["chaining"] == 5
 
@@ -167,6 +167,16 @@ def test_report_latency():
     assert report.mean_latency_ms() == pytest.approx(300.0)
 
 
+def test_report_faithfulness():
+    item = _make_item()
+    r1 = build_eval_result(item, _make_call(), 100, False, None)
+    r1.faithfulness_score = 1.0
+    r2 = build_eval_result(item, _make_call("GitTool", "status"), 100, False, None)
+    r2.faithfulness_score = 0.0
+    report = _make_report([r1, r2])
+    assert report.faithfulness_score() == pytest.approx(0.5)
+
+
 def test_report_per_category():
     items = [
         _make_item(id=1, gt_tool="FileHandler", gt_action="list", category="file_ops"),
@@ -188,9 +198,10 @@ def test_report_to_dict_structure():
     results = [build_eval_result(item, _make_call(), 100, False, None)]
     report = _make_report(results)
     d = report.to_dict()
-    for key in ("model", "summary", "per_category", "per_difficulty", "results"):
+    for key in ("model", "summary", "per_category", "per_difficulty", "per_model", "results"):
         assert key in d
     assert d["summary"]["total"] == 1
+    assert "faithfulness_score" in d["summary"]
 
 
 # ── Report generation ─────────────────────────────────────────────────────────
@@ -208,3 +219,4 @@ def test_report_generates_files(tmp_path):
     md = md_p.read_text()
     assert "Tool Accuracy" in md
     assert "Action Accuracy" in md
+    assert "Faithfulness Score" in md

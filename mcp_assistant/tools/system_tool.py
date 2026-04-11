@@ -1,5 +1,8 @@
 from __future__ import annotations
 import os
+import platform
+import socket
+import sys
 import time
 import psutil
 from mcp_assistant.mcp.base import MCPTool
@@ -10,12 +13,12 @@ class SystemTool(MCPTool):
     TOOL_NAME = "SystemTool"
     TOOL_DESCRIPTION = "System resource monitoring and process management."
     SUPPORTED_ACTIONS = {
-        "cpu_stats":      "CPU usage and core count. Params: (none)",
-        "ram_stats":      "RAM usage and availability. Params: (none)",
-        "disk_stats":     "Disk usage for all mounted partitions. Params: (none)",
-        "list_processes": "List top N processes by CPU. Params: n (int, default 15)",
-        "kill_process":   "Kill a process by PID or name. Params: pid OR name [DESTRUCTIVE]",
-        "env_info":       "Show OS, Python version, hostname, uptime. Params: (none)",
+        "cpu_stats":      "CPU usage percentage and core count. Use ONLY for CPU/processor questions.",
+        "ram_stats":      "RAM/memory usage: total, used, available. Use for MEMORY or RAM questions.",
+        "disk_stats":     "Disk/storage usage per partition. Use for DISK or STORAGE questions.",
+        "list_processes": "List top N running processes by CPU. Use for PROCESS or PROGRAM questions. Params: n (int, default 15)",
+        "kill_process":   "Terminate a process. ALWAYS CONFIRM. Params: pid (int) or name (str)",
+        "env_info":       "System environment: OS, hostname, Python version, UPTIME. Use for UPTIME, SYSTEM INFO, or HOSTNAME questions.",
     }
     DESTRUCTIVE_ACTIONS = {"kill_process"}
     ALWAYS_CONFIRM_ACTIONS = {"kill_process"}
@@ -76,7 +79,10 @@ class SystemTool(MCPTool):
 
     def _ram_stats(self) -> tuple[str, dict]:
         vm = psutil.virtual_memory()
-        swap = psutil.swap_memory()
+        try:
+            swap = psutil.swap_memory()
+        except (psutil.Error, PermissionError, OSError):
+            swap = None
 
         def fmt(b: int) -> str:
             return f"{b / (1024**3):.2f} GB"
@@ -90,9 +96,14 @@ class SystemTool(MCPTool):
         out = (
             f"RAM Total     : {fmt(vm.total)}\n"
             f"RAM Used      : {fmt(vm.used)} ({vm.percent}%)\n"
-            f"RAM Available : {fmt(vm.available)}\n"
-            f"Swap Used     : {fmt(swap.used)} / {fmt(swap.total)}"
+            f"RAM Available : {fmt(vm.available)}"
         )
+        if swap is None:
+            out += "\nSwap Used     : unavailable"
+        else:
+            out += f"\nSwap Used     : {fmt(swap.used)} / {fmt(swap.total)}"
+            data["swap_used_gb"] = round(swap.used / 1024**3, 2)
+            data["swap_total_gb"] = round(swap.total / 1024**3, 2)
         return out, data
 
     def _disk_stats(self) -> tuple[str, list[dict]]:
@@ -118,11 +129,18 @@ class SystemTool(MCPTool):
 
     def _list_processes(self, n: int) -> tuple[str, list[dict]]:
         procs = []
-        for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "username"]):
-            try:
-                procs.append(p.info)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        try:
+            iterator = psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "username"])
+            for p in iterator:
+                try:
+                    procs.append(p.info)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except (psutil.Error, PermissionError, OSError) as exc:
+            return (
+                f"Process listing unavailable in this environment: {exc}",
+                [],
+            )
         procs.sort(key=lambda x: x.get("cpu_percent") or 0, reverse=True)
         top = procs[:n]
         lines = [f"{'PID':>7}  {'CPU%':>5}  {'MEM%':>5}  {'USER':<12}  NAME"]
@@ -143,22 +161,29 @@ class SystemTool(MCPTool):
         return f"Sent SIGTERM to {name} (PID {pid})", {"pid": pid, "name": name}
 
     def _env_info(self) -> tuple[str, dict]:
-        import platform, sys
-        boot = psutil.boot_time()
-        uptime_s = int(time.time() - boot)
-        h, m = divmod(uptime_s // 60, 60)
+        try:
+            boot = psutil.boot_time()
+            uptime_s = int(time.time() - boot)
+            h, m = divmod(uptime_s // 60, 60)
+            uptime_text = f"{h}h {m}m"
+            uptime_min = uptime_s // 60
+        except (psutil.Error, PermissionError, OSError):
+            uptime_text = "unavailable"
+            uptime_min = None
+
+        hostname = socket.gethostname()
         data = {
             "os": platform.system(),
             "os_version": platform.version(),
-            "hostname": os.uname().nodename,
+            "hostname": hostname,
             "python": sys.version,
-            "uptime_min": uptime_s // 60,
+            "uptime_min": uptime_min,
         }
         out = (
             f"OS       : {platform.system()} {platform.release()}\n"
-            f"Hostname : {data['hostname']}\n"
+            f"Hostname : {hostname}\n"
             f"Python   : {sys.version.split()[0]}\n"
-            f"Uptime   : {h}h {m}m"
+            f"Uptime   : {uptime_text}"
         )
         return out, data
 

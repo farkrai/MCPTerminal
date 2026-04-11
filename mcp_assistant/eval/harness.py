@@ -3,12 +3,29 @@ import sys
 import time
 from pathlib import Path
 from mcp_assistant import config
+from mcp_assistant.audit.logger import AuditLogger
 from mcp_assistant.eval.dataset import load_dataset, EvalItem
 from mcp_assistant.eval.metrics import EvalReport, EvalResult, build_eval_result
 from mcp_assistant.eval.report import generate_report
 from mcp_assistant.llm.client import OllamaClient
+from mcp_assistant.llm.inference import infer_call
+from mcp_assistant.llm.model_router import ModelRouter
 from mcp_assistant.llm.prompt_builder import PromptBuilder
-from mcp_assistant.llm.response_parser import parse_response, ParseError
+from mcp_assistant.mcp.dispatcher import MCPDispatcher
+from mcp_assistant.mcp.policy import PolicyConfig
+from mcp_assistant.mcp.registry import ToolRegistry
+from mcp_assistant.mcp.schema import MCPCall, MCPChain, ParseError
+from mcp_assistant.tools.file_handler import FileHandler
+from mcp_assistant.tools.git_tool import GitTool
+from mcp_assistant.tools.system_tool import SystemTool
+from mcp_assistant.tools.test_runner import TestRunner
+
+_FAITHFULNESS_SAFE_ACTIONS: dict[str, set[str]] = {
+    "FileHandler": {"list", "search", "read"},
+    "GitTool": {"status", "diff", "log", "branch_list"},
+    "SystemTool": {"cpu_stats", "ram_stats", "disk_stats", "list_processes", "env_info"},
+    "TestRunner": {"detect"},
+}
 
 
 class EvalHarness:
@@ -29,7 +46,23 @@ class EvalHarness:
 
         self._client = OllamaClient()
         self._builder = PromptBuilder()
-        self._system = self._builder.system_prompt()
+        self._model_router = ModelRouter(self._client)
+        if self._client.is_available():
+            self._model_router.warm_up()
+
+        self._policy = PolicyConfig.load_or_default(config.MCPRC_FILE)
+        self._registry = ToolRegistry()
+        self._registry.register(FileHandler(self._policy))
+        self._registry.register(GitTool())
+        self._registry.register(SystemTool())
+        self._registry.register(TestRunner(llm_client=self._client))
+        self._dispatcher = MCPDispatcher(
+            self._registry,
+            self._policy,
+            AuditLogger(config.AUDIT_LOG_DIR),
+            confirm_fn=lambda _: False,
+            client=self._client,
+        )
 
     def run_all(self) -> EvalReport:
         results: list[EvalResult] = []
@@ -85,30 +118,62 @@ class EvalHarness:
 
     def _run_single(self, item: EvalItem, context: list[dict]) -> EvalResult:
         ctx = context[-(self._context_window * 2):] if self._context_window > 0 else []
-        prompt = self._builder.user_prompt(item.nl_input, ctx)
 
         start = time.perf_counter()
-        parsed = None
         error = None
 
-        for attempt in range(config.MAX_PARSE_RETRIES + 1):
-            try:
-                p = prompt if attempt == 0 else prompt + "\n\nREMINDER: Respond ONLY with valid JSON."
-                raw = self._client.generate(p, system=self._system)
-                parsed = parse_response(raw)
-                break
-            except ParseError as e:
-                error = str(e)
-                if attempt == config.MAX_PARSE_RETRIES:
-                    latency = (time.perf_counter() - start) * 1000
-                    return build_eval_result(item, None, latency, parse_failed=True, error=error)
-            except Exception as e:
-                error = str(e)
-                latency = (time.perf_counter() - start) * 1000
-                return build_eval_result(item, None, latency, parse_failed=True, error=error)
+        try:
+            parsed = infer_call(
+                nl_input=item.nl_input,
+                client=self._client,
+                builder=self._builder,
+                model_router=self._model_router,
+                context=ctx,
+                use_cache=False,
+            )
+        except ParseError as e:
+            error = str(e)
+            latency = (time.perf_counter() - start) * 1000
+            return build_eval_result(item, None, latency, parse_failed=True, error=error)
+        except Exception as e:
+            error = str(e)
+            latency = (time.perf_counter() - start) * 1000
+            return build_eval_result(item, None, latency, parse_failed=True, error=error)
 
         latency = (time.perf_counter() - start) * 1000
-        return build_eval_result(item, parsed, latency, parse_failed=False, error=None)
+        eval_result = build_eval_result(item, parsed, latency, parse_failed=False, error=None)
+        faithfulness = self._measure_faithfulness(parsed)
+        if faithfulness is None:
+            if eval_result.action_match:
+                faithfulness = 1.0
+            elif eval_result.tool_match:
+                faithfulness = 0.5
+            else:
+                faithfulness = 0.0
+        eval_result.faithfulness_score = faithfulness
+        return eval_result
+
+    def _measure_faithfulness(self, parsed) -> float | None:
+        if isinstance(parsed, MCPCall):
+            if parsed.action not in _FAITHFULNESS_SAFE_ACTIONS.get(parsed.tool, set()):
+                return None
+            result = self._dispatcher.dispatch(parsed)
+            if not result.success:
+                return 0.0
+            return 0.5 if len(result.output.strip()) < 20 else 1.0
+
+        if isinstance(parsed, MCPChain):
+            if not parsed.steps:
+                return 0.0
+            if any(step.action not in _FAITHFULNESS_SAFE_ACTIONS.get(step.tool, set()) for step in parsed.steps):
+                return None
+            results = self._dispatcher.dispatch_chain(parsed, self._model_router)
+            if not all(r.success for r in results):
+                return 0.0
+            combined_output = " ".join(r.output for r in results)
+            return 0.5 if len(combined_output.strip()) < 20 else 1.0
+
+        return None
 
 
 def run_ablation_study(

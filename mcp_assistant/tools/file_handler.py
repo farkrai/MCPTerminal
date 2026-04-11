@@ -1,22 +1,24 @@
 from __future__ import annotations
 import fnmatch
+import subprocess
 import time
 from pathlib import Path
 from mcp_assistant.mcp.base import MCPTool
 from mcp_assistant.mcp.schema import MCPCall, MCPResult
 from mcp_assistant.mcp.policy import PolicyConfig
 from mcp_assistant import config
+from mcp_assistant.llm.ecosystem import AVAILABLE
 
 
 class FileHandler(MCPTool):
     TOOL_NAME = "FileHandler"
     TOOL_DESCRIPTION = "Read, write, list, search, and delete files within sandboxed paths."
     SUPPORTED_ACTIONS = {
-        "read":   "Read the contents of a file. Params: path",
-        "write":  "Write content to a file. Params: path, content [DESTRUCTIVE]",
-        "list":   "List files in a directory. Params: path, pattern (optional glob)",
-        "search": "Search for files matching a pattern. Params: path, pattern",
-        "delete": "Delete a file. Params: path [DESTRUCTIVE]",
+        "list":   "List files and directories in a folder (not recursive file search). Use when the request asks what is IN a specific directory. Params: path (str)",
+        "search": "Find files recursively by name pattern. Use when the request asks to FIND, SEARCH, or LOOK FOR files. Params: pattern (str, glob), path (str, optional root)",
+        "read":   "Read and display the full text contents of a specific file. Params: path (str)",
+        "write":  "Write or overwrite a file with new content. DESTRUCTIVE. Params: path (str), content (str)",
+        "delete": "Delete a file permanently. DESTRUCTIVE. Params: path (str)",
     }
     DESTRUCTIVE_ACTIONS = {"write", "delete"}
 
@@ -59,7 +61,7 @@ class FileHandler(MCPTool):
 
     def validate_params(self, call: MCPCall) -> list[str]:
         errors = []
-        if call.action in {"read", "write", "delete", "list", "search"}:
+        if call.action in {"read", "write", "delete"}:
             if not call.params.get("path"):
                 errors.append("'path' param is required")
         if call.action == "write" and "content" not in call.params:
@@ -74,7 +76,16 @@ class FileHandler(MCPTool):
         if size_mb > self._policy.max_file_size_mb:
             raise ValueError(f"File too large ({size_mb:.1f} MB > {self._policy.max_file_size_mb} MB limit)")
         content = path.read_text(encoding="utf-8", errors="replace")
-        return f"Read {path} ({len(content)} chars)", content
+        if AVAILABLE["bat"]:
+            proc = subprocess.run(
+                ["bat", "--color=always", "--style=numbers,changes", str(path)],
+                capture_output=True,
+                text=True,
+            )
+            display = proc.stdout or content
+        else:
+            display = content
+        return display, content
 
     def _write(self, call: MCPCall) -> tuple[str, None]:
         path = self._resolve_and_check(call.params["path"])
@@ -84,24 +95,44 @@ class FileHandler(MCPTool):
         return f"Written {len(content)} chars to {path}", None
 
     def _list(self, call: MCPCall) -> tuple[str, list[str]]:
-        path = self._resolve_and_check(call.params["path"])
+        path = self._resolve_and_check(call.params.get("path", "."))
         if not path.is_dir():
             raise ValueError(f"Not a directory: {path}")
         pattern = call.params.get("pattern", "*")
         entries = sorted(path.glob(pattern))
         names = [str(e.relative_to(path)) for e in entries]
-        summary = f"Found {len(names)} item(s) in {path}"
-        if names:
-            summary += ":\n" + "\n".join(f"  {n}" for n in names[:50])
-            if len(names) > 50:
-                summary += f"\n  ... and {len(names) - 50} more"
+        if AVAILABLE["eza"] or AVAILABLE["exa"]:
+            cmd = [("eza" if AVAILABLE["eza"] else "exa"), "--long", "--colour=always", str(path)]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            summary = proc.stdout.strip() or f"Found {len(names)} item(s) in {path}"
+        else:
+            summary = f"Found {len(names)} item(s) in {path}"
+            if names:
+                summary += ":\n" + "\n".join(f"  {n}" for n in names[:50])
+                if len(names) > 50:
+                    summary += f"\n  ... and {len(names) - 50} more"
         return summary, names
 
     def _search(self, call: MCPCall) -> tuple[str, list[str]]:
-        path = self._resolve_and_check(call.params["path"])
+        path = self._resolve_and_check(call.params.get("path", "."))
         pattern = call.params.get("pattern", "*")
-        matches = sorted(path.rglob(pattern))
-        paths = [str(m) for m in matches if m.is_file()]
+        if AVAILABLE["rg"]:
+            proc = subprocess.run(
+                ["rg", "--files", "-g", pattern, str(path)],
+                capture_output=True,
+                text=True,
+            )
+            paths = [line for line in proc.stdout.strip().splitlines() if line]
+        elif AVAILABLE["fd"]:
+            proc = subprocess.run(
+                ["fd", pattern, str(path)],
+                capture_output=True,
+                text=True,
+            )
+            paths = [line for line in proc.stdout.strip().splitlines() if line]
+        else:
+            matches = sorted(path.rglob(pattern))
+            paths = [str(m) for m in matches if m.is_file()]
         summary = f"Found {len(paths)} match(es) for '{pattern}' under {path}"
         if paths:
             summary += ":\n" + "\n".join(f"  {p}" for p in paths[:50])
@@ -119,7 +150,7 @@ class FileHandler(MCPTool):
     def _resolve_and_check(self, raw_path: str) -> Path:
         path = Path(raw_path)
         if not path.is_absolute():
-            path = config.PROJECT_ROOT / path
+            path = config.WORKSPACE_DIR / path
         path = path.resolve()
         if not self._policy.is_path_allowed(path):
             raise PermissionError(f"Path not allowed by policy: {path}")

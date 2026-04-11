@@ -1,6 +1,7 @@
 # Phase 1
 requests==2.32.3
 pydantic==2.10.6
+tomli>=2.0; python_version < "3.11"
 
 # Phase 2
 psutil==6.1.1
@@ -8,8 +9,13 @@ psutil==6.1.1
 # Phase 4
 textual
 rich
+langgraph>=0.2
 
 # Dev
 pytest>=8.3
 pytest-asyncio>=0.25
 pytest-cov>=6.1
+
+# Optional server integration
+# Install separately if you want the FastMCP wrapper:
+#   pip install -e ".[server]"

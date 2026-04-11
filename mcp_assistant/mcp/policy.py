@@ -1,9 +1,13 @@
 from __future__ import annotations
 import fnmatch
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from mcp_assistant import config
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - compatibility for Python < 3.11
+    import tomli as tomllib
 
 
 @dataclass
@@ -55,7 +59,7 @@ class PolicyConfig:
     @classmethod
     def default(cls) -> "PolicyConfig":
         return cls(
-            sandbox_root=config.PROJECT_ROOT,
+            sandbox_root=config.WORKSPACE_DIR,
             blocked_paths=["**/.env", "**/*.pem", "**/*.key", "**/id_rsa", "**/.ssh/**"],
             max_file_size_mb=10,
             allowed_tools=[],
@@ -75,8 +79,8 @@ class PolicyConfig:
         )
 
     @classmethod
-    def load(cls, path: Path) -> "PolicyConfig":
-        with path.open("rb") as f:
+    def load(cls, mcprc_path: Path) -> "PolicyConfig":
+        with mcprc_path.open("rb") as f:
             data = tomllib.load(f)
 
         security = data.get("security", {})
@@ -84,7 +88,15 @@ class PolicyConfig:
         confirmations = data.get("confirmations", {})
         behavior = data.get("behavior", {})
 
-        sandbox = Path(security.get("sandbox_root", str(config.PROJECT_ROOT))).resolve()
+        sandbox = str(security.get("sandbox_root", "") or "").strip()
+        if not sandbox:
+            sandbox_root = config.WORKSPACE_DIR
+        else:
+            sandbox_path = Path(sandbox).expanduser()
+            if sandbox_path.is_absolute():
+                sandbox_root = sandbox_path.resolve()
+            else:
+                sandbox_root = (mcprc_path.parent / sandbox_path).resolve()
 
         confirm_list = confirmations.get("confirm_required", [
             "FileHandler.write", "FileHandler.delete",
@@ -92,7 +104,7 @@ class PolicyConfig:
         ])
 
         return cls(
-            sandbox_root=sandbox,
+            sandbox_root=sandbox_root,
             blocked_paths=security.get("blocked_paths", ["**/.env", "**/*.pem", "**/*.key"]),
             max_file_size_mb=int(security.get("max_file_size_mb", 10)),
             allowed_tools=tools.get("allowed_tools", []),

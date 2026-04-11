@@ -35,6 +35,7 @@ class AuditLogger:
                 "output": result.output[:500],
                 "error": result.error,
                 "duration_ms": round(result.duration_ms, 2),
+                "model_used": result.model_used,
             },
             "prev_hash": self._prev_hash,
         }

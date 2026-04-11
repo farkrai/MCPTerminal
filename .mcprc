@@ -3,7 +3,7 @@ schema_version = "1.0"
 project_name = "MCP Terminal Assistant"
 
 [security]
-sandbox_root = "/home/krshrivathsan/MajorProject"
+sandbox_root = ""   # auto-detect from WORKSPACE_DIR (directory where `mcp` is launched)
 blocked_paths = ["**/.env", "**/*.pem", "**/*.key", "**/id_rsa", "**/.ssh/**", "**/secrets/**"]
 max_file_size_mb = 10
 
