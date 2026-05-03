@@ -1,780 +1,901 @@
-# MCP Terminal Assistant — Knowledge Transfer Document
+# MCP Terminal Assistant — Knowledge Transfer
 
-> This document is written for the next developer taking over this project.
-> It assumes Python familiarity but no prior knowledge of this codebase.
-> Read this before touching any code.
+> Reading time: ~60 minutes  
+> Last updated: 2026-04-11  
+> Audience: developer continuing this project from scratch
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#1-project-overview)
-2. [Repository Layout](#2-repository-layout)
-3. [Architecture — How the Pieces Connect](#3-architecture--how-the-pieces-connect)
-4. [Component Reference](#4-component-reference)
-5. [Data Flow — A Single Command End to End](#5-data-flow--a-single-command-end-to-end)
-6. [The Plugin SDK — Adding New Tools](#6-the-plugin-sdk--adding-new-tools)
-7. [Policy System — `.mcprc`](#7-policy-system--mcprc)
-8. [Audit Log — Format and Verification](#8-audit-log--format-and-verification)
-9. [Evaluation Harness](#9-evaluation-harness)
-10. [Running Tests](#10-running-tests)
-11. [Environment Setup from Scratch](#11-environment-setup-from-scratch)
-12. [Known Limitations and Design Decisions](#12-known-limitations-and-design-decisions)
-13. [Where to Go Next — Suggested Improvements](#13-where-to-go-next--suggested-improvements)
-14. [Dependency Map](#14-dependency-map)
+1. [What It Is](#1-what-it-is)
+2. [Unique Selling Points](#2-unique-selling-points)
+3. [Tech Stack](#3-tech-stack)
+4. [Repository Layout](#4-repository-layout)
+5. [Architecture Overview](#5-architecture-overview)
+6. [FastMCP Server Layer](#6-fastmcp-server-layer)
+   - 6.1 [Tool Design Pattern](#61-tool-design-pattern)
+   - 6.2 [Namespace Mounting](#62-namespace-mounting)
+   - 6.3 [Tags & Tag Taxonomy](#63-tags--tag-taxonomy)
+   - 6.4 [Middleware Chain](#64-middleware-chain)
+   - 6.5 [Resources](#65-resources)
+   - 6.6 [Prompts](#66-prompts)
+   - 6.7 [FastMCP Transforms (PromptsAsTools / ResourcesAsTools)](#67-fastmcp-transforms-promptsastools--resourcesastools)
+7. [Tool Inventory (37 tools)](#7-tool-inventory-37-tools)
+8. [Hallucination Prevention](#8-hallucination-prevention)
+   - 8.1 [HallucinationGuard](#81-hallucinationguard)
+   - 8.2 [Confidence Gating](#82-confidence-gating)
+9. [Efficient Tool Lookup (Meta-tools)](#9-efficient-tool-lookup-meta-tools)
+10. [ToolKit / ToolRouter — Context-Aware Visibility](#10-toolkit--toolrouter--context-aware-visibility)
+11. [Audit System](#11-audit-system)
+12. [Policy System (.mcprc)](#12-policy-system-mcprc)
+13. [Context Window Management](#13-context-window-management)
+14. [LLM Layer (Ollama / deepseek-r1:8b)](#14-llm-layer-ollama--deepseek-r18b)
+15. [CLI Entry Point & REPL](#15-cli-entry-point--repl)
+16. [Textual TUI](#16-textual-tui)
+17. [Evaluation Harness](#17-evaluation-harness)
+18. [Configuration Reference](#18-configuration-reference)
+19. [How to Run](#19-how-to-run)
+20. [How to Extend](#20-how-to-extend)
+21. [Known Gaps & Next Steps](#21-known-gaps--next-steps)
 
 ---
 
-## 1. Project Overview
+## 1. What It Is
 
-**What it is:** A Python application that wraps a local LLM (Ollama/phi3) with
-a structured tool invocation protocol (MCP — Model Context Protocol). Users
-type natural-language commands; the LLM maps them to tool calls; the tool
-connectors execute real operations.
+**MCP Terminal Assistant** is an offline, privacy-preserving AI terminal assistant.  
+It translates natural language instructions (e.g. *"show me files changed in the last commit"*) into structured tool calls that execute locally on the developer's machine — no cloud, no external APIs, no telemetry.
 
-**What makes it different from raw shell AI:**
-- The LLM never executes shell commands directly — it only emits structured
-  JSON describing *which tool* and *which action* to call.
-- A policy engine (`PolicyConfig`) enforces path sandboxing, tool whitelists,
-  and confirmation gates before anything destructive runs.
-- Every tool invocation is written to a SHA-256 chained audit log.
+It ships three runnable modes:
 
-**Stack:**
-- Python 3.13
-- Ollama (`phi3:latest`) running locally on `localhost:11434`
-- Textual 8.x for the TUI
-- psutil for system stats
-- No cloud services, no internet required at runtime
-
-**Academic context:** 12-credit major project. The evaluation harness
-(`eval/`) is the primary research deliverable — it measures intent accuracy,
-latency, and hallucination rate across 60 hand-crafted test cases.
+| Command | What it does |
+|---------|--------------|
+| `mcp` | Launches the Textual TUI (default) |
+| `mcp --cli` | Launches the readline CLI (lightweight) |
+| `mcp-server` | Runs the FastMCP server in stdio mode (Claude Desktop / any MCP client) |
 
 ---
 
-## 2. Repository Layout
+## 2. Unique Selling Points
+
+### 2.1 Complete Offline Operation
+All inference runs via **Ollama** (`deepseek-r1:8b` by default). No internet connection is required after model download. Suitable for air-gapped environments, sensitive codebases, and privacy-conscious developers.
+
+### 2.2 FastMCP 3.2.3 — Industry-Latest Practices
+Rebuilt on **FastMCP 3.2.3**, the reference implementation of the Model Context Protocol. Uses every modern FastMCP feature:
+- `@mcp.tool()` decorator with `Annotated[type, "description"]` parameter annotation
+- `Context` dependency injection for progress reporting (`ctx.report_progress`)
+- `ToolAnnotations` with `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`
+- Sub-server `mcp.mount(sub, namespace="x")` producing clean `x_toolname` prefixes
+- `Middleware` base class with `on_call_tool` hook
+- `Visibility` transforms (`mcp.enable(tags=..., only=True)`)
+- `PromptsAsTools` and `ResourcesAsTools` transforms
+
+### 2.3 Hallucination Prevention (Multi-Layer)
+Three independent defences stop the LLM from calling tools that don't exist:
+1. **HallucinationGuard** — fuzzy edit-distance matching + legacy name conversion
+2. **Confidence Gating** — prompts user confirmation below a threshold
+3. **Policy Middleware** — blocks disallowed tool namespaces at the server level
+
+### 2.4 Tamper-Evident Audit Log
+Every tool call and result is appended to a **SHA-256-chained JSONL** file. Each entry contains the hash of the previous entry, making silent tampering detectable. `mcp-verify` CLI command verifies the chain integrity.
+
+### 2.5 Policy-Driven Access Control
+A `.mcprc` TOML file controls:
+- Which tools are allowed/disabled
+- Which paths are sandboxed or blocked
+- Which operations require interactive confirmation
+- Global dry-run mode (no writes, no deletes)
+
+### 2.6 ToolKit / Visibility Routing
+The **ToolRouter** narrows the LLM's tool view to a domain-specific subset via FastMCP Visibility transforms. Fewer tools in the system prompt → lower hallucination rate. Activate with `!toolkit git` or the `toolkit_activate` tool.
+
+### 2.7 In-Process Client (Zero IPC Overhead)
+Uses `fastmcp.Client(mcp_server_instance)` for the CLI/TUI. The client and server share the same process — no subprocess spawning, no stdio piping, sub-millisecond tool dispatch.
+
+### 2.8 Eval Harness
+A JSON-driven evaluation harness (`mcp-eval`) measures tool accuracy, parse failure rate, chain execution rate, and p95 latency against a golden dataset.
+
+---
+
+## 3. Tech Stack
+
+| Component | Technology | Version |
+|-----------|-----------|---------|
+| MCP framework | FastMCP | 3.2.3 |
+| LLM inference | Ollama (local) | any |
+| LLM model | deepseek-r1:8b | — |
+| TUI framework | Textual | ≥0.80 |
+| System metrics | psutil | ≥5.9 |
+| Python | CPython | ≥3.13 |
+| Package manager | pip / setuptools | ≥68 |
+| Audit storage | JSONL (plain files) | — |
+| Config format | TOML (.mcprc) | — |
+
+---
+
+## 4. Repository Layout
 
 ```
 MajorProject/
-│
-├── mcp_assistant/              ← Main Python package
-│   ├── config.py               ← All constants and path resolution
-│   ├── main.py                 ← Entry point; routes to TUI or CLI
+├── mcp_assistant/
+│   ├── config.py                   ← Global path/env constants
+│   ├── main.py                     ← Entry point: TUI / CLI / server
 │   │
-│   ├── llm/                    ← LLM communication layer
-│   │   ├── client.py           ← HTTP client for Ollama API
-│   │   ├── prompt_builder.py   ← Builds system + user prompts
-│   │   ├── response_parser.py  ← Parses LLM output → MCPCall/MCPChain
-│   │   └── confidence.py       ← Decides whether to ask for clarification
+│   ├── server/                     ← FastMCP server layer (NEW in rewrite)
+│   │   ├── app.py                  ← create_server() / get_server() factory
+│   │   ├── middleware.py           ← PolicyMiddleware, TimingMiddleware, AuditMiddleware
+│   │   ├── resources.py            ← @mcp.resource() registrations
+│   │   ├── prompts.py              ← @mcp.prompt() registrations
+│   │   ├── schema.py               ← ToolCall, ToolChain, ToolChainStep dataclasses
+│   │   ├── state.py                ← Process-level policy + audit singletons
+│   │   ├── hallucination_guard.py  ← Fuzzy tool-name validator
+│   │   ├── toolkit.py              ← ToolKit / ToolRouter (Visibility transforms)
+│   │   └── tools/
+│   │       ├── file.py             ← 5 file tools
+│   │       ├── git.py              ← 7 git tools
+│   │       ├── system.py           ← 6 system tools
+│   │       ├── test.py             ← 4 test tools
+│   │       ├── network.py          ← 4 network tools
+│   │       └── meta.py             ← 3 meta/routing tools
 │   │
-│   ├── mcp/                    ← Protocol and dispatch layer
-│   │   ├── schema.py           ← MCPCall, MCPResult, MCPChain dataclasses
-│   │   ├── base.py             ← MCPTool abstract base (Plugin SDK)
-│   │   ├── registry.py         ← Tool registration + plugin auto-discovery
-│   │   ├── dispatcher.py       ← Routing, policy checks, dry-run, audit
-│   │   └── policy.py           ← PolicyConfig loaded from .mcprc
-│   │
-│   ├── tools/                  ← Concrete tool implementations
-│   │   ├── file_handler.py     ← FileHandler — read/write/list/search/delete
-│   │   ├── git_tool.py         ← GitTool — git operations via subprocess
-│   │   ├── system_tool.py      ← SystemTool — psutil metrics + process mgmt
-│   │   └── test_runner.py      ← TestRunner — pytest/jest runner
+│   ├── llm/
+│   │   ├── client.py               ← OllamaClient (HTTP to localhost:11434)
+│   │   ├── prompt_builder.py       ← System prompt + user prompt construction
+│   │   ├── response_parser.py      ← JSON parser + <think> tag stripper
+│   │   └── confidence.py           ← Confidence gate + known-tools registry
 │   │
 │   ├── audit/
-│   │   ├── logger.py           ← SHA-256 chained JSONL audit log
-│   │   └── retention.py        ← Deletes old log files by age
+│   │   ├── logger.py               ← SHA-256-chained JSONL audit writer
+│   │   └── retention.py            ← Old log cleanup
 │   │
 │   ├── context/
-│   │   └── buffer.py           ← Conversation memory (sliding window)
+│   │   └── buffer.py               ← ConversationBuffer (sliding window, persistence)
 │   │
-│   ├── tui/                    ← Textual terminal UI
-│   │   ├── app.py              ← Root App — wires everything together
-│   │   ├── theme.py            ← Textual CSS layout
-│   │   └── widgets/
-│   │       ├── stats_sidebar.py   ← Left panel: live CPU/RAM/disk
-│   │       ├── history_panel.py   ← Center: conversation scroll log
-│   │       ├── tool_inspector.py  ← Right: last MCPCall details
-│   │       └── input_bar.py       ← Bottom: NL input field
+│   ├── tui/
+│   │   ├── app.py                  ← Textual App wiring
+│   │   ├── theme.py                ← Dark terminal theme
+│   │   └── widgets/                ← HistoryPanel, InputBar, StatsSidebar, etc.
 │   │
-│   └── eval/                   ← Evaluation / research layer
-│       ├── dataset.py          ← Loads eval_dataset.json
-│       ├── metrics.py          ← EvalResult, EvalReport dataclasses + calculations
-│       ├── harness.py          ← Runs evaluations, ablation study, CLI
-│       └── report.py           ← Renders JSON + Markdown reports
+│   └── eval/
+│       ├── harness.py              ← CLI evaluation runner
+│       ├── dataset.py              ← Golden dataset loader
+│       ├── metrics.py              ← Accuracy / latency metrics
+│       └── report.py               ← Report renderer
 │
-├── plugins/                    ← Drop-in tool plugins (auto-discovered)
-│   └── example_plugin/
-│       └── tool.py             ← TimeTool — demonstrates the Plugin SDK
-│
-├── eval_data/
-│   └── eval_dataset.json       ← 60 NL commands with ground-truth tool calls
-│
-├── eval_results/               ← Generated at runtime by the eval harness
-├── audit_logs/                 ← Generated at runtime; gitignored
-│
-├── tests/                      ← pytest suite (65 tests)
-│   ├── conftest.py             ← Shared fixtures
-│   ├── test_schema.py
-│   ├── test_response_parser.py
-│   ├── test_policy.py
-│   ├── test_audit.py
-│   ├── test_dispatcher.py
-│   ├── test_context_buffer.py
-│   ├── test_plugin_sdk.py
-│   ├── test_tools.py
-│   └── test_eval.py
-│
-├── .mcprc                      ← Project policy file (TOML)
-├── pyproject.toml              ← Package metadata + pytest config
-└── requirements.txt            ← All dependencies
+├── tests/
+├── docs/
+│   └── KNOWLEDGE_TRANSFER.md      ← This file
+├── .mcprc                          ← Policy config (TOML, gitignored)
+├── pyproject.toml
+└── audit_logs/                     ← JSONL audit files (gitignored)
+```
+
+> **Note:** `mcp_assistant/mcp/` and `mcp_assistant/tools/` are the **old** pre-rewrite modules.
+> They still exist for reference but are not used by `main.py` or the server layer.
+> Safe to delete after verifying nothing imports them.
+
+---
+
+## 5. Architecture Overview
+
+```
+User Input (CLI / TUI)
+        │
+        ▼
+  PromptBuilder ──builds─→ system_prompt + user_prompt
+        │
+        ▼
+  OllamaClient.generate()   [deepseek-r1:8b, temp=0.1]
+        │
+        ▼
+  response_parser.parse_response()
+    • strips <think>…</think> (deepseek CoT artifact)
+    • parses JSON → ToolCall | ToolChain
+        │
+        ▼
+  HallucinationGuard.validate()
+    • exact match → pass
+    • legacy "FileHandler.read" → "file_read" auto-convert
+    • case-insensitive match → auto-correct
+    • fuzzy edit-distance (cutoff 0.65) → auto-correct
+    • no match → reject, skip execution
+        │
+        ▼
+  Confidence Gate (should_clarify)
+    • confidence < threshold (default 0.5) → ask user y/n
+    • hallucinated tool → ask user y/n
+        │
+        ▼
+  fastmcp.Client(mcp_server) ← in-process, no subprocess
+        │ call_tool(name, params)
+        ▼
+  FastMCP Server
+    PolicyMiddleware → TimingMiddleware → AuditMiddleware → tool fn
+        │
+        ▼
+  Tool execution (file / git / system / test / network)
+        │
+        ▼
+  Result → ConversationBuffer.add_turn() → display to user
 ```
 
 ---
 
-## 3. Architecture — How the Pieces Connect
+## 6. FastMCP Server Layer
 
-The system has four clearly separated layers. Dependencies only flow downward:
+### 6.1 Tool Design Pattern
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  INPUT LAYER                                            │
-│  TUI (tui/app.py)  or  CLI loop (main.py)              │
-└─────────────────────────┬───────────────────────────────┘
-                          │ natural-language string
-┌─────────────────────────▼───────────────────────────────┐
-│  REASONING LAYER                                        │
-│  OllamaClient → PromptBuilder → response_parser        │
-│  → MCPCall or MCPChain dataclass                        │
-└─────────────────────────┬───────────────────────────────┘
-                          │ MCPCall / MCPChain
-┌─────────────────────────▼───────────────────────────────┐
-│  ACTION LAYER                                           │
-│  MCPDispatcher (policy checks + audit logging)         │
-│  → ToolRegistry.get(tool_name)                         │
-│  → MCPTool.execute(call) → MCPResult                   │
-└─────────────────────────┬───────────────────────────────┘
-                          │ MCPResult
-┌─────────────────────────▼───────────────────────────────┐
-│  OUTPUT LAYER                                           │
-│  HistoryPanel / ToolInspector (TUI) or print (CLI)     │
-│  ConversationBuffer.add_turn(...)                       │
-└─────────────────────────────────────────────────────────┘
-```
-
-**Key invariant:** The LLM never executes anything. It only produces a JSON
-object naming a tool and action. The dispatcher is the sole executor, and it
-always checks policy before calling `execute()`.
-
----
-
-## 4. Component Reference
-
-### `mcp/schema.py` — Shared Data Types
-
-Everything in the system is expressed through these four types:
+Every tool is an `async def` decorated with `@sub_mcp.tool()`:
 
 ```python
-MCPCall(tool, action, params, raw_response, confidence)
-MCPResult(call, success, output, data, error, duration_ms)
-MCPChainStep(tool, action, params, confidence)
-MCPChain(steps, description, continue_on_error)
+@file_mcp.tool(
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+    tags={"file", "read-only"},
+)
+async def read(
+    path: Annotated[str, "Absolute or relative path to the file"],
+    ctx: Context = None,
+) -> str:
+    """Read and return the full contents of a file."""
+    ...
 ```
 
-If you add fields here, update `to_dict()` methods and the eval harness.
+Key points:
+- **`Annotated[type, "description"]`** — the string becomes the parameter description in the MCP schema, visible to LLM clients.
+- **`ctx: Context = None`** — FastMCP dependency injection; use `await ctx.info(...)` for log messages and `await ctx.report_progress(n, total)` for progress events.
+- **`ToolAnnotations`** — hints the MCP client how to present the tool: `readOnlyHint=True` marks safe tools; `destructiveHint=True` marks dangerous ones.
+- **`tags`** — used for Visibility filtering (ToolKit) and the `describe_tools` meta-tool routing.
 
----
+### 6.2 Namespace Mounting
 
-### `llm/client.py` — OllamaClient
-
-POSTs to `http://localhost:11434/api/generate`. Key methods:
-- `generate(prompt, system, temperature)` → `str` — blocking, returns full response
-- `generate_stream(...)` → `Iterator[str]` — yields tokens (used for future streaming)
-- `is_available()` → `bool` — quick health check
-
-Temperature is set to `0.1` for structured tool-call generation (low entropy
-= more deterministic JSON) and `0.7` for natural-language prompts like
-test-failure explanations.
-
----
-
-### `llm/prompt_builder.py` — PromptBuilder
-
-Constructs two prompts for every query:
-
-1. **System prompt** — Injected once per session. Contains: JSON format rules,
-   chain trigger instructions, and the full tool registry summary (every tool
-   name, description, and action). This is what teaches the LLM what tools
-   exist.
-
-2. **User prompt** — Built per query. Prepends conversation history (last N
-   turns from `ConversationBuffer`), then appends the current query.
-
-**Critical:** If you add a new tool, call `registry.generate_summary()` and
-pass the result to `PromptBuilder(tool_summary=...)`. Without this, the LLM
-doesn't know the tool exists.
-
----
-
-### `llm/response_parser.py` — parse_response()
-
-phi3 does not always return clean JSON. This module handles four output
-formats that phi3 produces in practice:
-
-| Format | Example |
-|---|---|
-| Clean JSON | `{"tool": "GitTool", ...}` |
-| Markdown-fenced | ` ```json\n{...}\n``` ` |
-| Prose-wrapped | `Sure! Here is the answer:\n{...}` |
-| Chain | `{"chain": true, "steps": [...]}` |
-
-The fallback path uses `re.search(r'\{.*\}', text, re.DOTALL)` to extract
-JSON from anywhere in the response.
-
-If parsing fails after `MAX_PARSE_RETRIES` (default 2), the harness appends
-`"REMINDER: Respond ONLY with valid JSON."` to the next attempt.
-
-**Returns:** `MCPCall` or `MCPChain`. Raises `ParseError` on unrecoverable failure.
-
----
-
-### `mcp/dispatcher.py` — MCPDispatcher
-
-The central security enforcement point. For every `dispatch(call)` call:
-
-1. Tool must exist in registry → else return failure result
-2. Tool must be allowed by policy → else return failure result
-3. `tool.validate_params(call)` → else return failure result
-4. If `dry_run_mode` OR action in `confirm_required` OR action in
-   `DESTRUCTIVE_ACTIONS` → call `tool.dry_run()`, call `confirm_fn(preview)`
-   → if user says no, return cancelled result
-5. `tool.execute(call)` → `MCPResult`
-6. `audit_logger.log(call, result)`
-7. Return result
-
-`dispatch_chain(chain)` loops over steps, passing each through `dispatch()`,
-and resolves `{{step_N.output}}` templates in later steps' params.
-
-The `confirm_fn` parameter is dependency-injected. The TUI passes a function
-that auto-confirms (the UI handles confirmation differently); the CLI passes
-`_default_confirm` which calls `input()`.
-
----
-
-### `mcp/policy.py` — PolicyConfig
-
-Loaded from `.mcprc` using Python 3.13's stdlib `tomllib`. Falls back to
-`PolicyConfig.default()` if no `.mcprc` exists.
-
-Key enforcement methods:
-- `is_path_allowed(path)` — resolves to absolute, checks sandbox_root, checks
-  blocked_paths globs
-- `is_tool_allowed(tool_name)` — checks disabled_tools, then allowed_tools
-- `requires_confirmation(tool, action)` — checks confirm_required set
-
-**Important:** `PolicyConfig` is a mutable dataclass. The TUI modifies
-`policy.dry_run_mode` in-place when the user toggles `Ctrl+D`. This is
-intentional — no restart needed for policy changes at runtime.
-
----
-
-### `mcp/base.py` — MCPTool (Plugin SDK)
-
-Every tool must inherit from `MCPTool` and set four class-level attributes:
+Sub-servers are built independently and mounted on the main server with a namespace prefix:
 
 ```python
-TOOL_NAME: str             # Must match what the LLM emits
-TOOL_DESCRIPTION: str      # Injected into LLM system prompt
-SUPPORTED_ACTIONS: dict    # action_name → description (injected into prompt)
-DESTRUCTIVE_ACTIONS: set   # Actions that trigger dry-run/confirm
+# In server/app.py
+mcp.mount(file_mcp, namespace="file")   # read()   → "file_read"
+mcp.mount(git_mcp,  namespace="git")    # status() → "git_status"
+mcp.mount(meta_mcp)                      # describe_tools → "describe_tools" (no prefix)
 ```
 
-The only required method is `execute(call: MCPCall) -> MCPResult`. It must
-**never raise** — catch all exceptions inside and return `self._err(call, str(e))`.
-
-Helper methods on `MCPTool`:
-- `self._ok(call, output, data, duration_ms)` → success MCPResult
-- `self._err(call, error, duration_ms)` → failure MCPResult
-
----
-
-### `mcp/registry.py` — ToolRegistry
-
-Two ways tools get registered:
-
-1. **Explicit:** `registry.register(FileHandler(policy))` in `main.py` / `tui/app.py`
-2. **Plugin discovery:** `registry.discover_plugins(config.PLUGINS_DIR)` — walks
-   `plugins/*/`, imports every `.py` file, finds non-abstract `MCPTool` subclasses
-
-If a plugin fails to import, it is silently skipped. Check stderr for import errors.
-
-After registration, call `registry.generate_summary()` and pass it to
-`PromptBuilder` before the first LLM call. The summary is what populates the
-system prompt's tool list.
-
----
-
-### `audit/logger.py` — AuditLogger
-
-Writes to `audit_logs/audit_YYYY-MM-DD.jsonl`. Each line is a JSON object with:
-- `seq`, `session_id`, `ts`, `user`, `hostname`
-- `call` — full MCPCall dict
-- `result` — success, output (truncated to 500 chars), error, duration_ms
-- `prev_hash` — SHA-256 of the previous entry
-- `entry_hash` — SHA-256 of this entry (excluding `entry_hash` itself)
-
-The hash chain means: to verify integrity, recompute every hash and check
-`entry_hash == SHA256(entry_without_entry_hash)` and
-`prev_hash == previous_entry_hash`. Any discrepancy means tampering.
-
-Verification: `AuditLogger.verify_chain(path)` returns `(bool, list[str])`.
-
----
-
-### `context/buffer.py` — ConversationBuffer
-
-A list of `{"role", "content", "call"}` dicts, capped at `max_turns * 2`
-entries (each exchange = 1 user + 1 assistant turn = 2 entries).
-
-- `save()` / `load()` persist to `~/.mcp_assistant/context.json`
-- `get_context(n)` strips the internal `call` field before returning — only
-  `role` and `content` go to the LLM prompt
-
-Context is loaded at startup and saved on clean exit (`Ctrl+Q` or `exit`).
-
----
-
-### `tui/app.py` — MCPAssistantApp
-
-The Textual `App` subclass. Key design points:
-
-- **Attribute naming:** Use `self._tool_registry`, NOT `self._registry`. Textual
-  uses `_registry` internally; the collision caused a crash during Phase 4.
-
-- **Blocking calls:** All Ollama HTTP calls and dispatcher calls are wrapped in
-  `asyncio.to_thread(lambda: ...)` so they don't block the UI event loop.
-
-- **Worker pattern:** Commands are processed via `self.run_worker(coro)`.
-  `exclusive=True` prevents a second command from starting while one is running.
-
-- **Clarification flow:** When the LLM returns low-confidence output, the app
-  sets `self._awaiting_confirm = True` and stores `self._pending_call`. The
-  next input is interpreted as a y/n response rather than a new command.
-
----
-
-## 5. Data Flow — A Single Command End to End
-
-**Input:** User types `"show git status"` and presses Enter.
-
-```
-InputBar.on_input_submitted
-  → post_message(CommandSubmitted("show git status"))
-
-MCPAssistantApp.on_input_bar_command_submitted
-  → query_one(HistoryPanel).add_user("show git status")
-  → run_worker(_process_command("show git status"))
-
-_process_command (async, in thread pool for blocking parts)
-  → PromptBuilder.user_prompt("show git status", context=[...])
-  → asyncio.to_thread(OllamaClient.generate(prompt, system=system_prompt))
-       → POST http://localhost:11434/api/generate
-       → returns: '{"tool": "GitTool", "action": "status", "params": {}, "confidence": 1.0}'
-  → parse_response(raw) → MCPCall(tool="GitTool", action="status", ...)
-  → confidence.should_clarify(call) → False (conf=1.0 > threshold=0.5)
-  → _dispatch_parsed(call)
-
-_dispatch_parsed
-  → asyncio.to_thread(dispatcher.dispatch(call))
-
-MCPDispatcher.dispatch(call)
-  → registry.get("GitTool") → GitTool instance
-  → policy.is_tool_allowed("GitTool") → True
-  → GitTool.validate_params(call) → [] (no errors)
-  → policy.requires_confirmation("GitTool", "status") → False
-  → GitTool.execute(call) → subprocess.run(["git", "status"]) → stdout
-  → MCPResult(success=True, output="On branch main\n...")
-  → audit_logger.log(call, result) → appends to JSONL file
-
-back in _dispatch_parsed
-  → HistoryPanel.add_result(result.output, True)
-  → ToolInspector.show_call(call, result)
-  → ConversationBuffer.add_turn("assistant", result.output[:200])
-  → InputBar.set_busy(False)
-```
-
----
-
-## 6. The Plugin SDK — Adding New Tools
-
-Create a new directory under `plugins/` and add a `tool.py`:
+The sub-server function name becomes the suffix. Exception: functions named after Python builtins (e.g. `list`, `read`) can't be the function name — use `name="list"` in the decorator and name the function something else:
 
 ```python
-# plugins/my_plugin/tool.py
-from mcp_assistant.mcp.base import MCPTool
-from mcp_assistant.mcp.schema import MCPCall, MCPResult
-import time
-
-class MyTool(MCPTool):
-    TOOL_NAME = "MyTool"
-    TOOL_DESCRIPTION = "What this tool does, in one sentence."
-    SUPPORTED_ACTIONS = {
-        "my_action": "Description of what this action does. Params: param_name",
-    }
-    DESTRUCTIVE_ACTIONS = set()       # add action names that need confirmation
-
-    def execute(self, call: MCPCall) -> MCPResult:
-        start = time.perf_counter()
-        action = call.action
-        try:
-            if action == "my_action":
-                result_str = "done"
-                return self._ok(call, result_str, duration_ms=_ms(start))
-            else:
-                return self._err(call, f"Unknown action: {action}", _ms(start))
-        except Exception as e:
-            return self._err(call, str(e), _ms(start))
-
-def _ms(start):
-    return round((time.perf_counter() - start) * 1000, 2)
+@file_mcp.tool(name="list", ...)
+async def list_directory(path, pattern="*", ctx=None) -> dict: ...
+# → produces tool name "file_list"
 ```
 
-No other files need to change. On next startup, `ToolRegistry.discover_plugins()`
-finds `MyTool`, registers it, and the LLM system prompt automatically includes it.
+### 6.3 Tags & Tag Taxonomy
 
-**Rules:**
-- Class name can be anything. `TOOL_NAME` is what the LLM uses.
-- `execute()` must never raise. Always `try/except` and return `_err`.
-- `validate_params()` is optional but recommended for required params.
-- `dry_run()` is optional — override to give a meaningful preview for
-  destructive actions.
+Tags serve two purposes: **ToolKit routing** (Visibility transforms) and **meta-tool keyword matching**.
+
+| Tag | Meaning |
+|-----|---------|
+| `file` | File I/O tools |
+| `git` | Git VCS tools |
+| `system` | OS/process tools |
+| `test` | Test framework tools |
+| `network` | Network diagnostic tools |
+| `read-only` | Safe, non-destructive (cross-namespace) |
+| `destructive` | Writes, deletes, process kills |
+| `monitoring` | System stats (cpu, ram, disk, env) |
+| `diagnostic` | Network probes (ping, dns, http, port) |
+| `meta` | Tool discovery and routing |
+
+Most tools carry **two tags**: their domain tag (`file`) and their safety tag (`read-only` or `destructive`).
+
+### 6.4 Middleware Chain
+
+Middleware runs in order: **PolicyMiddleware → TimingMiddleware → AuditMiddleware → tool**.
+
+```
+PolicyMiddleware   → check .mcprc; raise ToolError if namespace disabled
+TimingMiddleware   → start perf timer
+AuditMiddleware    → start perf timer
+  [tool fn executes]
+AuditMiddleware    → write JSONL entry (SHA-256 chain)
+TimingMiddleware   → record elapsed, update histogram
+```
+
+**`PolicyMiddleware`** (`middleware.py:27`)  
+Extracts the namespace prefix from the tool name (`"file_read"` → `"file"` → `"FileHandler"`), checks `policy.is_tool_allowed()`, raises `ToolError` if blocked.
+
+**`TimingMiddleware`** (`middleware.py:42`)  
+Maintains class-level `_totals`, `_counts`, `_min`, `_max` dictionaries. Access via `TimingMiddleware.global_stats()` → dict of `{tool: {calls, avg_ms, min_ms, max_ms, total_ms}}`. The TUI sidebar can surface slow tools using this.
+
+**`AuditMiddleware`** (`middleware.py:98`)  
+Calls `audit.log(tool, params, output, success, error, duration_ms)` regardless of success/failure. Captures the first 500 chars of the text content from the MCP result.
+
+### 6.5 Resources
+
+Resources are read-only data endpoints. They are registered in `server/resources.py`:
+
+| URI | Name | Content |
+|-----|------|---------|
+| `resource://config` | server-config | Current `.mcprc` policy as JSON |
+| `resource://audit/today` | audit-log-today | Today's JSONL audit log |
+| `resource://audit/verify` | audit-chain-verify | SHA-256 chain integrity report |
+| `resource://session` | session-info | Session ID + call count |
+
+Resources are used internally by the `ResourcesAsTools` transform (see §6.7).
+
+### 6.6 Prompts
+
+Prompt templates are registered in `server/prompts.py`:
+
+| Name | Purpose |
+|------|---------|
+| `system-instructions` | Full system prompt for the LLM (response format, chain syntax) |
+| `clarify-intent` | Multi-turn clarification when confidence is low |
+| `explain-test-failures` | Asks the LLM to explain pytest/jest failures |
+| `summarize-git-diff` | Asks the LLM to summarise a diff in plain English |
+
+Prompts are used internally but also exposed as callable tools via `PromptsAsTools` (§6.7).
+
+### 6.7 FastMCP Transforms (PromptsAsTools / ResourcesAsTools)
+
+```python
+# In server/app.py, after mounting all tools:
+mcp.add_transform(PromptsAsTools())
+mcp.add_transform(ResourcesAsTools())
+```
+
+**`PromptsAsTools`** wraps every `@mcp.prompt()` as a tool. An LLM client can call `prompt_explain-test-failures(test_output="...")` directly without needing to know the MCP prompts API. Tool names are `prompt_<original-name>`.
+
+**`ResourcesAsTools`** wraps every `@mcp.resource()` as a zero-argument (or URI-argument) tool. The LLM can call `resource_server-config()` to read the current policy, or `resource_audit-today()` to fetch today's log. Tool names are `resource_<resource-name>`.
 
 ---
 
-## 7. Policy System — `.mcprc`
+## 7. Tool Inventory (37 tools)
 
-The `.mcprc` file in the project root is loaded at startup using
-`tomllib` (Python 3.13 stdlib). Every field has a safe default.
+### File Tools (5) — namespace `file`
+| Tool | Tags | Description |
+|------|------|-------------|
+| `file_read` | file, read-only | Read file contents |
+| `file_write` | file, destructive | Write or overwrite a file (dry-run aware) |
+| `file_list` | file, read-only | List directory contents with glob filtering |
+| `file_search` | file, read-only | Recursive file search by glob pattern |
+| `file_delete` | file, destructive | Delete a file (dry-run aware) |
 
-```toml
-[security]
-sandbox_root = "/home/krshrivathsan/MajorProject"
-blocked_paths = ["**/.env", "**/*.pem", "**/*.key", "**/id_rsa", "**/.ssh/**"]
-max_file_size_mb = 10
+### Git Tools (7) — namespace `git`
+| Tool | Tags | Description |
+|------|------|-------------|
+| `git_status` | git, read-only | Working tree status |
+| `git_diff` | git, read-only | Staged / unstaged diff |
+| `git_log` | git, read-only | Commit log with configurable depth |
+| `git_add` | git | Stage files |
+| `git_commit` | git, destructive | Create a commit |
+| `git_branch_list` | git, read-only | List branches |
+| `git_branch_switch` | git, destructive | Switch branch |
 
-[tools]
-allowed_tools = ["FileHandler", "GitTool", "SystemTool", "TestRunner"]
-# Whitelist. Empty list = all tools allowed.
-disabled_tools = []
+### System Tools (6) — namespace `system`
+| Tool | Tags | Description |
+|------|------|-------------|
+| `system_cpu_stats` | system, monitoring, read-only | CPU usage per core |
+| `system_ram_stats` | system, monitoring, read-only | RAM total/used/free |
+| `system_disk_stats` | system, monitoring, read-only | Disk partitions usage |
+| `system_list_processes` | system, monitoring, read-only | Top processes by CPU |
+| `system_kill_process` | system, destructive | Kill a process by PID |
+| `system_env_info` | system, monitoring, read-only | OS version, Python, cwd, user |
 
-[confirmations]
-confirm_required = ["FileHandler.write", "FileHandler.delete", "GitTool.commit", "SystemTool.kill_process"]
-confirm_all_destructive = true
-# If true, any action in DESTRUCTIVE_ACTIONS also triggers confirm
+### Test Tools (4) — namespace `test`
+| Tool | Tags | Description |
+|------|------|-------------|
+| `test_detect` | test, read-only | Detect pytest / jest in a directory |
+| `test_run` | test | Auto-detect and run full test suite |
+| `test_run_file` | test | Run a specific test file with pytest |
+| `test_explain_failures` | test, read-only | Ask LLM to explain failure output |
 
-[behavior]
-dry_run_mode = false
-confidence_threshold = 0.5   # Below this → ask user to confirm intent
-context_window_size = 10     # How many conversation turns to remember
+### Network Tools (4) — namespace `network`
+| Tool | Tags | Description |
+|------|------|-------------|
+| `network_ping` | network, diagnostic | ICMP ping a host |
+| `network_dns_lookup` | network, diagnostic | DNS resolve → IPv4/IPv6 |
+| `network_http_probe` | network, diagnostic | HTTP/HTTPS status + latency |
+| `network_port_check` | network, diagnostic | TCP port open/closed/filtered |
 
-[audit]
-log_dir = "audit_logs"
-retention_days = 30          # 0 = keep forever
-```
+### Meta Tools (3) — no namespace
+| Tool | Tags | Description |
+|------|------|-------------|
+| `describe_tools` | meta, read-only | Find tools matching a natural language query |
+| `toolkit_status` | meta, read-only | Show available kits and current active kit |
+| `toolkit_activate` | meta | Activate a domain-specific ToolKit |
 
-`PolicyConfig.load_or_default(path)` handles missing files gracefully.
-`PolicyConfig.default()` hardcodes safe defaults identical to the above.
+### PromptsAsTools (4) — via transform
+`prompt_system-instructions`, `prompt_clarify-intent`, `prompt_explain-test-failures`, `prompt_summarize-git-diff`
 
-**To disable a tool entirely** (e.g., prevent SystemTool from being used):
-```toml
-[tools]
-disabled_tools = ["SystemTool"]
-```
-
-**To block an additional path pattern:**
-```toml
-[security]
-blocked_paths = ["**/.env", "**/*.pem", "**/my_secrets/**"]
-```
+### ResourcesAsTools (4) — via transform
+`resource_server-config`, `resource_audit-log-today`, `resource_audit-chain-verify`, `resource_session-info`
 
 ---
 
-## 8. Audit Log — Format and Verification
+## 8. Hallucination Prevention
 
-**Location:** `audit_logs/audit_YYYY-MM-DD.jsonl`
+### 8.1 HallucinationGuard
 
-**Single entry (formatted for readability — actual file is one line):**
+**File:** `mcp_assistant/server/hallucination_guard.py`
+
+The `HallucinationGuard` sits in the CLI/TUI REPL, *before* the FastMCP client call. It validates and optionally auto-corrects every tool name the LLM generates.
+
+```python
+guard = HallucinationGuard(known_tools=tool_names, auto_correct=True)
+parsed, report = guard.validate(parsed_tool_call)
+```
+
+**5-step validation pipeline:**
+
+| Step | Condition | Action |
+|------|-----------|--------|
+| 1 | Exact match | Accept, return `None` report |
+| 2 | `"FileHandler.read"` style | Auto-convert to `"file_read"` via `_LEGACY_MAP` |
+| 3 | Case-insensitive match | Auto-correct (sim = 0.95) |
+| 4 | Fuzzy edit-distance ≥ 0.65 | Auto-correct with similarity-scaled confidence |
+| 5 | No match | Reject, return report with `suggested_tool=None` |
+
+`_LEGACY_MAP` covers all 20 old-format tool names from the pre-rewrite codebase, so existing prompt caches and evaluation datasets continue to work.
+
+**Metrics:** `guard.stats()` returns a `GuardStats(total_calls, hallucinated, auto_corrected, rejected, hallucination_rate)`. Exposed in `!stats` CLI command and TUI sidebar.
+
+**Chain validation:** `guard.validate_chain(chain)` applies the same logic to every step in a `ToolChain`.
+
+### 8.2 Confidence Gating
+
+**File:** `mcp_assistant/llm/confidence.py`
+
+A simpler first-pass check: if the LLM returns a confidence score below the policy threshold (default 0.5), or if the tool name is not in the known-tools set, the user is asked to confirm before dispatch.
+
+```python
+if should_clarify(parsed, policy.confidence_threshold):
+    # prompt user y/n
+```
+
+This runs *after* HallucinationGuard — the guard corrects the name first, then confidence gating checks the score.
+
+---
+
+## 9. Efficient Tool Lookup (Meta-tools)
+
+**File:** `mcp_assistant/server/tools/meta.py`
+
+With 37 tools in the system prompt, the LLM may pick a suboptimal tool. The `describe_tools` meta-tool lets the LLM self-route:
+
+```json
+{"tool": "describe_tools", "params": {"query": "read a file"}, "confidence": 0.99}
+```
+
+Response includes matching tool names, first-line descriptions, and parameter signatures — no full schemas. Capped at 8 results.
+
+**Keyword → tag routing** maps common words to tag groups for faster scoring:
+
+```python
+KEYWORD_TAGS = [
+    (["file", "read", "write", "list", ...], "file"),
+    (["git", "commit", "diff", ...],         "git"),
+    (["cpu", "ram", "memory", ...],           "system"),
+    ...
+]
+```
+
+A tool scores 2 if its tags match, 1 if its description contains query words, 0 otherwise.
+
+---
+
+## 10. ToolKit / ToolRouter — Context-Aware Visibility
+
+**File:** `mcp_assistant/server/toolkit.py`
+
+A `ToolKit` is a named subset of tools identified by tags. Activating it calls FastMCP's Visibility transform to narrow the LLM's tool list:
+
+```python
+kit.activate(mcp)   # → mcp.enable(tags=self.tags, only=True)
+kit.deactivate(mcp) # → mcp.disable(tags=self.tags)
+```
+
+**Available kits:**
+
+| Kit | Tags | Tools visible |
+|-----|------|---------------|
+| `file` | `{"file"}` | 5 file tools |
+| `git` | `{"git"}` | 7 git tools |
+| `system` | `{"system"}` | 6 system tools |
+| `test` | `{"test"}` | 4 test tools |
+| `network` | `{"network"}` | 4 network tools |
+| `read-only` | `{"read-only"}` | All non-destructive tools (cross-namespace) |
+| `monitoring` | `{"monitoring"}` | CPU/RAM/disk/env tools |
+| `diagnostic` | `{"diagnostic"}` | Network probe tools |
+
+**User-facing:** `!toolkit git` in the CLI; `toolkit_activate(kit="git")` as an LLM-callable tool.  
+**Reset:** `!toolkit all` or `toolkit_activate(kit="all")`.
+
+Why this matters: reducing the tool list in the system prompt directly reduces hallucination rate — fewer candidates means lower chance of the LLM picking a wrong tool name or fabricating a parameter from a different tool.
+
+---
+
+## 11. Audit System
+
+**File:** `mcp_assistant/audit/logger.py`
+
+Every tool invocation — success or failure — is appended to a daily JSONL file:
+
+```
+audit_logs/audit_2026-04-11.jsonl
+```
+
+Each line is a JSON object:
+
 ```json
 {
   "seq": 1,
-  "session_id": "a3f9b2c1",
-  "ts": "2026-04-07T14:23:11.847291+00:00",
-  "user": "krshrivathsan",
-  "hostname": "fedora-workstation",
-  "call": {
-    "tool": "GitTool",
-    "action": "status",
-    "params": {},
-    "raw_response": "{...}",
-    "confidence": 1.0
-  },
-  "result": {
-    "success": true,
-    "output": "On branch main\n...",
-    "error": null,
-    "duration_ms": 8.3
-  },
-  "prev_hash": "e3b0c44298fc1c149afb4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "entry_hash": "b94d27b9934d3e08a52e52d7da7dabfac484efe04294e576f3d48e6e3a72db6e"
+  "ts": "2026-04-11T10:23:01.123456",
+  "session": "a1b2c3d4",
+  "tool": "file_read",
+  "params": {"path": "/home/user/foo.py"},
+  "output": "def main():\n    ...",
+  "success": true,
+  "error": null,
+  "duration_ms": 3.14,
+  "prev_hash": "0000000000000000...",
+  "hash": "sha256(<prev_hash + current fields>)"
 }
 ```
 
-**Verification algorithm** (in `AuditLogger.verify_chain`):
-1. Read all entries from the JSONL file
-2. For each entry: recompute `SHA256(json.dumps(entry_without_entry_hash, sort_keys=True))`
-3. Assert computed hash == stored `entry_hash`
-4. Assert stored `prev_hash` == previous entry's `entry_hash`
-5. First entry has `prev_hash = "0" * 64` (genesis)
+**Chain integrity:** `AuditLogger.verify_chain(path)` re-computes each hash from scratch and checks it matches. Returns `(ok: bool, errors: list[str])`. The `mcp-verify` CLI and `!verify` REPL command both use this.
 
-Any mismatch indicates tampering at or after that position.
+**Retention:** `audit/retention.py` deletes logs older than `policy.audit_retention_days` days (default 30). Called at startup.
 
 ---
 
-## 9. Evaluation Harness
+## 12. Policy System (.mcprc)
 
-**Purpose:** Measures the LLM's intent-detection accuracy on a fixed dataset
-of 60 natural-language commands.
+**File:** `mcp_assistant/mcp/policy.py`  
+**Config file:** `.mcprc` (TOML, at project root)
 
-**Dataset** (`eval_data/eval_dataset.json`):
-Each entry has `id`, `nl_input`, `ground_truth` (`{tool, action, params}`),
-`category`, and `difficulty`. Chain entries also have `is_chain` and `chain_steps`.
+Example `.mcprc`:
 
+```toml
+[policy]
+sandbox_root = "/home/user/projects"
+blocked_paths = ["/etc", "/usr", "~/.ssh"]
+max_file_size_mb = 10
+
+allowed_tools = []          # empty = all allowed
+disabled_tools = []         # explicit disable list
+
+confirm_required = ["file_delete", "git_commit", "system_kill_process"]
+confirm_all_destructive = false
+dry_run_mode = false
+
+confidence_threshold = 0.5
+context_window_size = 10
+audit_retention_days = 30
 ```
-60 items:  file_ops(15)  git_ops(15)  system_ops(15)  test_ops(10)  chaining(5)
-Difficulty: easy(30)  medium(20)  hard(10)
-```
 
-**Metrics collected:**
-
-| Metric | Definition |
-|---|---|
-| Tool Accuracy | % where `predicted.tool == ground_truth.tool` |
-| Action Accuracy | % where both tool AND action match |
-| Parse Failure Rate | % where LLM output could not be parsed as JSON |
-| Hallucination Rate | % where predicted tool is not a registered tool name |
-| Mean / P95 Latency | LLM call duration (ms) |
-
-**Ablation study** (4 conditions, run with `--ablation`):
-
-| Condition | Context | Conf. Gate |
-|---|---|---|
-| `no_context_no_conf_gate` | 0 turns | off |
-| `ctx5_no_conf_gate` | 5 turns | off |
-| `ctx10_no_conf_gate` | 10 turns | off |
-| `ctx10_with_conf_gate` | 10 turns | 0.5 threshold |
-
-The ablation shows the marginal effect of context and confidence gating on
-accuracy. Expected finding: context helps on follow-up queries; confidence
-gating reduces hallucinations at the cost of clarification overhead.
-
-**Adding new eval items:** Edit `eval_data/eval_dataset.json`. Follow the
-existing schema. Add `"is_chain": true` and `"chain_steps": [...]` for
-multi-step ground truths. Update tests in `tests/test_eval.py` if total count
-changes.
+`PolicyConfig.load_or_default()` reads this file on server startup and stores the singleton in `server/state.py`. `PolicyMiddleware` checks `policy.is_tool_allowed()` before each tool call.
 
 ---
 
-## 10. Running Tests
+## 13. Context Window Management
+
+**File:** `mcp_assistant/context/buffer.py`
+
+`ConversationBuffer` is a sliding window of the most recent N user/assistant turns (default N=10, configured via `policy.context_window_size`).
+
+```python
+buffer = ConversationBuffer(max_turns=10)
+buffer.load()           # restore from ~/.mcp_assistant/context.json
+buffer.add_turn("user", "show git diff")
+buffer.add_turn("assistant", "file changed: foo.py")
+ctx = buffer.get_context()  # → [{"role": "user", "content": "..."}, ...]
+buffer.save()           # persist across sessions
+```
+
+The context is included in every LLM prompt via `builder.user_prompt(input, buffer.get_context())`, giving the LLM short-term memory of the conversation.
+
+`!context` shows history; `!context clear` wipes it.
+
+---
+
+## 14. LLM Layer (Ollama / deepseek-r1:8b)
+
+### OllamaClient (`llm/client.py`)
+
+Makes HTTP POST requests to `http://localhost:11434/api/generate`. Two temperature settings:
+- `OLLAMA_TEMP_STRUCTURED = 0.1` — for tool call generation (deterministic)
+- `OLLAMA_TEMP_NL = 0.7` — for natural language explanations
+
+`is_available()` pings the Ollama health endpoint; called at startup.
+
+### PromptBuilder (`llm/prompt_builder.py`)
+
+```python
+builder = PromptBuilder()
+builder.update_from_fastmcp_tools(tools)  # builds compact tool summary from live schemas
+system = builder.system_prompt()           # includes tool summary + format instructions
+user   = builder.user_prompt(input, ctx)  # includes conversation context + user input
+```
+
+`update_from_fastmcp_tools()` builds a compact one-line-per-tool summary:
+```
+file_read(path)  — Read and return the full contents of a file.
+git_status()     — Show the current working tree status.
+...
+```
+
+### ResponseParser (`llm/response_parser.py`)
+
+1. Strips `<think>…</think>` blocks (deepseek-r1 chain-of-thought artifact)
+2. Extracts JSON from the remaining text
+3. Parses into `ToolCall` (single) or `ToolChain` (multi-step)
+
+**Single call format:**
+```json
+{"tool": "file_read", "params": {"path": "src/main.py"}, "confidence": 0.95}
+```
+
+**Chain format:**
+```json
+{
+  "chain": true,
+  "description": "Get git status then show diff",
+  "steps": [
+    {"tool": "git_status", "params": {}, "confidence": 0.95},
+    {"tool": "git_diff",   "params": {}, "confidence": 0.90}
+  ]
+}
+```
+
+Chain triggers: words like "then", "after that", "first...then", "followed by", "and also" in the user input.
+
+---
+
+## 15. CLI Entry Point & REPL
+
+**File:** `mcp_assistant/main.py`
+
+### Startup sequence
+
+```python
+mcp = get_server()          # lazily creates FastMCP server (once per process)
+async with Client(mcp) as client:
+    tools = await client.list_tools()
+    register_known_tools({t.name for t in tools})
+    builder.update_from_fastmcp_tools(tools)
+    guard = HallucinationGuard(known_tools=tool_names)
+```
+
+### REPL pipeline (per turn)
+
+```
+input → PromptBuilder → OllamaClient → ResponseParser
+      → HallucinationGuard.validate()
+      → Confidence gate (should_clarify)
+      → client.call_tool(name, params)
+      → print result → ConversationBuffer.add_turn()
+```
+
+### Special commands
+
+| Command | Action |
+|---------|--------|
+| `!help` | Show all commands |
+| `!dry-run on\|off` | Toggle dry-run mode |
+| `!context` | Show conversation history |
+| `!context clear` | Clear history |
+| `!verify` | Verify today's audit chain |
+| `!tools` | List all FastMCP tools |
+| `!toolkit <kit\|all>` | Activate a ToolKit |
+| `!stats` | Session stats + guard stats + slow tools |
+
+### Chain template resolution
+
+Chain steps can reference prior outputs with `{{step_N.output}}`:
+```json
+{"tool": "git_diff", "params": {"ref": "{{step_1.output}}"}}
+```
+Resolved by `_resolve_chain_templates()` before dispatch.
+
+---
+
+## 16. Textual TUI
+
+**File:** `mcp_assistant/tui/app.py`
+
+Built on [Textual](https://textual.textualize.io/). Widgets:
+- **HistoryPanel** — scrollable conversation log
+- **InputBar** — user input, sends on Enter
+- **StatsSidebar** — live session stats (context window size, call count, guard stats)
+- **ToolInspector** — shows the last tool call and its result
+- **CommandPalette** — fuzzy command search (Ctrl+P)
+- **WelcomeScreen** — shown on first launch
+
+The TUI uses the same `get_server()` singleton and `Client(mcp)` in-process client as the CLI.
+
+---
+
+## 17. Evaluation Harness
+
+**File:** `mcp_assistant/eval/harness.py`
+
+Run with: `mcp-eval --dataset tests/eval_dataset.json`
+
+The harness:
+1. Loads a golden dataset of `{input, expected_tool, expected_params}` records
+2. Runs each input through the full LLM → parse → guard pipeline
+3. Computes accuracy (exact match), parameter match rate, parse failure rate, chain execution rate, p50/p95 latency
+4. Prints a summary report
+
+Used to verify that prompt changes or model swaps don't regress tool-call accuracy.
+
+---
+
+## 18. Configuration Reference
+
+| Setting | Default | Source | Description |
+|---------|---------|--------|-------------|
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | env var | Ollama server URL |
+| `OLLAMA_MODEL` | `deepseek-r1:8b` | env var | Model to use |
+| `OLLAMA_TIMEOUT` | `120` | env var | Request timeout (seconds) |
+| `CONFIDENCE_THRESHOLD` | `0.5` | env var / .mcprc | Below this → ask confirmation |
+| `CONTEXT_WINDOW_SIZE` | `10` | env var / .mcprc | Max turns in context |
+| `MAX_PARSE_RETRIES` | `2` | config.py | Retry count on parse failure |
+| `audit_retention_days` | `30` | .mcprc | Days to keep audit logs |
+| `dry_run_mode` | `false` | .mcprc | Disable all writes/deletes |
+| `sandbox_root` | project root | .mcprc | Restrict file ops to this path |
+
+---
+
+## 19. How to Run
+
+### Prerequisites
 
 ```bash
-# Fast (excludes TestRunner which invokes pytest recursively)
-venv/bin/pytest tests/ --ignore=tests/test_tools.py -q
+# Install Ollama and pull the model
+curl https://ollama.ai/install.sh | sh
+ollama pull deepseek-r1:8b
 
-# Full suite (takes ~2 min — TestRunner test runs a subprocess pytest)
-venv/bin/pytest tests/ -q
-
-# Single module
-venv/bin/pytest tests/test_dispatcher.py -v
-
-# With coverage
-venv/bin/pytest tests/ --cov=mcp_assistant --cov-report=term-missing
+# Install the package (editable)
+pip install -e ".[tui,dev]"
 ```
 
-**Current state:** 65 tests, all passing.
+### Run the TUI (default)
+```bash
+mcp
+```
 
-**Fixtures** (in `tests/conftest.py`):
-- `policy` — `PolicyConfig` loaded from `.mcprc`
-- `registry` — all 4 tools registered
-- `audit` — `AuditLogger` writing to `tmp_path`
-- `dispatcher` — `MCPDispatcher` with `confirm_fn=lambda _: True` (auto-approves)
+### Run the CLI
+```bash
+mcp --cli
+```
 
-Most tests use `dispatcher` as the entry point, which exercises the full
-dispatch stack without the LLM.
+### Run as standalone MCP server (for Claude Desktop)
+```bash
+mcp-server
+# or: python -m mcp_assistant.server.app
+```
+
+Add to `~/.config/claude/claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "terminal-assistant": {
+      "command": "mcp-server"
+    }
+  }
+}
+```
+
+### Run tests
+```bash
+pytest
+```
+
+### Verify audit chain
+```bash
+mcp-verify
+```
+
+### Run evaluation
+```bash
+mcp-eval
+```
 
 ---
 
-## 11. Environment Setup from Scratch
+## 20. How to Extend
+
+### Add a new tool
+
+1. Pick (or create) the right sub-server in `mcp_assistant/server/tools/`.
+2. Define an `async def` with `@sub_mcp.tool(annotations=..., tags={...})`.
+3. Use `Annotated[type, "description"]` for each parameter; include `ctx: Context = None`.
+4. No other wiring needed — `mcp.mount(sub_mcp, namespace="x")` picks it up automatically.
+5. Add the new tool name to `_LEGACY_MAP` in `hallucination_guard.py` if it has an old alias.
+
+```python
+@file_mcp.tool(
+    name="copy",
+    annotations=ToolAnnotations(destructiveHint=False),
+    tags={"file"},
+)
+async def copy_file(
+    src: Annotated[str, "Source path"],
+    dst: Annotated[str, "Destination path"],
+    ctx: Context = None,
+) -> str:
+    """Copy a file from src to dst."""
+    ...
+```
+
+### Add a new ToolKit
+
+Add a `ToolKit` entry to `ALL_KITS` in `toolkit.py`:
+
+```python
+EDITOR_KIT = ToolKit(
+    name="editor",
+    tags={"file", "git"},
+    description="Tools for editing workflows: file + git",
+)
+ALL_KITS["editor"] = EDITOR_KIT
+```
+
+### Swap the LLM model
 
 ```bash
-# 1. Clone / enter project
-cd /home/krshrivathsan/MajorProject
-
-# 2. Create venv (if not already present)
-python3.13 -m venv venv
-
-# 3. Install all dependencies
-venv/bin/pip install requests pydantic psutil textual rich pytest pytest-cov
-
-# 4. Install the package in editable mode
-venv/bin/pip install -e .
-
-# 5. Install Ollama (if not present)
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull phi3:latest
-
-# 6. Start Ollama
-ollama serve &
-
-# 7. Verify
-venv/bin/python -m mcp_assistant.llm.client   # should print "Ollama available"
-venv/bin/pytest tests/ -q                     # should show 65 passed
-
-# 8. Launch
-venv/bin/python -m mcp_assistant.main
+ollama pull llama3.1:8b
+export OLLAMA_MODEL=llama3.1:8b
+mcp --cli
 ```
 
-**Entry points** (after `pip install -e .`):
-```bash
-mcp           # launches TUI
-mcp --cli     # launches plain CLI
-mcp-eval      # evaluation harness
-mcp-verify    # audit chain verifier
+Or set `OLLAMA_MODEL` in your shell profile. If the new model doesn't emit `<think>` tags, `_strip_thinking_tags()` in `response_parser.py` is a no-op.
+
+### Add a new middleware
+
+```python
+class RateLimitMiddleware(Middleware):
+    _calls: dict[str, list[float]] = collections.defaultdict(list)
+    _limit = 10  # max calls per tool per minute
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):
+        tool = context.message.name
+        now = time.time()
+        self._calls[tool] = [t for t in self._calls[tool] if now - t < 60]
+        if len(self._calls[tool]) >= self._limit:
+            raise ToolError(f"Rate limit exceeded for '{tool}'")
+        self._calls[tool].append(now)
+        return await call_next(context)
 ```
+
+Then add it to `middleware=[..., RateLimitMiddleware()]` in `app.py`.
+
+### Add a new resource
+
+```python
+@mcp.resource("resource://perf/timing", mime_type="application/json")
+def get_timing_stats() -> str:
+    from mcp_assistant.server.middleware import TimingMiddleware
+    return json.dumps(TimingMiddleware.global_stats(), indent=2)
+```
+
+It will automatically be accessible as a tool via `ResourcesAsTools` after the server restarts.
 
 ---
 
-## 12. Known Limitations and Design Decisions
+## 21. Known Gaps & Next Steps
 
-### phi3 Latency
-phi3 3.8B Q4_0 takes 3–8 seconds per response on CPU. This is expected. If
-latency needs to improve:
-- Use a GPU-accelerated Ollama setup (`ollama run phi3:latest` with CUDA)
-- Switch to a smaller model (`phi3:mini`) — accuracy will drop
-- Use `generate_stream()` and show tokens as they arrive in the TUI
-
-### Chain Detection
-phi3 does not reliably emit chain JSON for every multi-step request. The
-prompt engineering in `prompt_builder.py` uses explicit trigger words ("then",
-"first...then") and examples. If chain detection is still unreliable:
-- Try a larger model (llama3 8B or larger)
-- Add a pre-processing step that detects multi-step keywords and hard-codes
-  a chain prompt variant
-
-### TUI Confirmation Flow
-Destructive operations in the TUI auto-confirm (via `confirm_fn=lambda _: True`)
-because the dispatcher's blocking `input()` call cannot be used in an async
-event loop. The TUI instead relies on `dry_run_mode` and the policy
-`confirm_required` list to show previews. A proper modal dialog (`Textual`
-supports `app.push_screen()`) would be a cleaner solution.
-
-### `self._tool_registry` Naming
-Do not rename this back to `self._registry` in `tui/app.py`. Textual uses
-`_registry` internally; the collision causes a `TypeError: 'ToolRegistry'
-object is not iterable` crash during app shutdown.
-
-### File Writes Require `content` Param
-The FileHandler `write` action requires the LLM to emit `{"path": "...",
-"content": "..."}`. phi3 often omits `content` for ambiguous requests like
-"create a file". The validator catches this and returns an error, preventing
-crashes, but the user must rephrase.
-
-### No Streaming in TUI
-The TUI uses `asyncio.to_thread(client.generate(...))` for blocking calls.
-The `generate_stream()` method exists but is not wired to the TUI yet. Adding
-streaming would require yielding tokens through a Textual reactive/message
-system.
+| Gap | Effort | Notes |
+|-----|--------|-------|
+| Old `mcp_assistant/mcp/` and `mcp_assistant/tools/` directories | Low | Pre-rewrite modules, unused. Delete after confirming nothing imports them. |
+| TUI not yet wired to `HallucinationGuard.global_stats()` | Medium | `StatsSidebar` could show live hallucination rate |
+| TUI not yet wired to `TimingMiddleware.global_stats()` | Medium | `StatsSidebar` could show slowest tools |
+| `PolicyMiddleware` uses legacy tool-class names for allow/block | Low | Remap to new namespace names (`"file"` instead of `"FileHandler"`) |
+| No streaming output | High | Ollama supports streaming; could pipe tokens to TUI in real time |
+| No multi-model support | Medium | Abstract `OllamaClient` behind an `LLMClient` protocol; add OpenAI/Anthropic adapters |
+| Context window uses token-unaware turn count | Medium | Switch to token budget management using a tokenizer |
+| `describe_tools` scores by tags but not by semantic similarity | High | Embed tool descriptions with a local embedding model for true semantic search |
+| Eval dataset is minimal | Low | Expand `tests/eval_dataset.json` with more diverse NL inputs |
 
 ---
 
-## 13. Where to Go Next — Suggested Improvements
-
-These are the highest-value extensions, roughly ordered by impact:
-
-**1. Streaming LLM output in the TUI**
-Wire `generate_stream()` to the history panel so the user sees tokens appear
-in real time. This dramatically reduces perceived latency.
-
-**2. Proper TUI confirmation modal**
-Replace the auto-confirm `lambda _: True` with a `textual` modal screen
-(`app.push_screen(ConfirmModal(preview))`) that blocks the coroutine until
-the user responds. This makes destructive-op confirmation visible in the UI.
-
-**3. Larger or smarter model**
-Swap phi3 for `llama3.1:8b` or `deepseek-coder:6.7b`. The dataset + harness
-are model-agnostic — just change `OLLAMA_MODEL` in `config.py` or set the
-env var.
-
-**4. Docker Tool**
-Add `plugins/docker_tool/tool.py` with actions: `list_containers`,
-`start`, `stop`, `logs`. The Plugin SDK means this requires zero changes to
-core code.
-
-**5. Database Inspector Tool**
-Add a read-only SQLite/PostgreSQL tool. Actions: `query`, `schema`, `tables`.
-Enforce SELECT-only by parsing the SQL before execution.
-
-**6. Shell Integration**
-Add a Fish/Zsh/Bash keybind that lifts the current typed command into the
-assistant for NL augmentation. This makes the tool usable without switching
-windows.
-
-**7. Benchmark Against Cloud Assistants**
-The eval harness is designed for this. Run the same 60 queries against
-Amazon Q CLI and GitHub Copilot CLI (where available), record their output,
-score manually, and add comparison columns to the ablation table.
-
----
-
-## 14. Dependency Map
-
-```
-mcp_assistant.main
-  ├── mcp_assistant.config
-  ├── mcp_assistant.llm.client          ← requests
-  ├── mcp_assistant.llm.prompt_builder
-  ├── mcp_assistant.llm.response_parser ← mcp.schema
-  ├── mcp_assistant.llm.confidence
-  ├── mcp_assistant.mcp.schema
-  ├── mcp_assistant.mcp.registry        ← mcp.base
-  ├── mcp_assistant.mcp.dispatcher      ← mcp.{registry,policy,schema}, audit.logger
-  ├── mcp_assistant.mcp.policy          ← tomllib (stdlib)
-  ├── mcp_assistant.audit.logger        ← hashlib, json (stdlib)
-  ├── mcp_assistant.audit.retention
-  ├── mcp_assistant.context.buffer
-  ├── mcp_assistant.tools.file_handler  ← mcp.{base,schema,policy}
-  ├── mcp_assistant.tools.git_tool      ← subprocess (stdlib)
-  ├── mcp_assistant.tools.system_tool   ← psutil
-  ├── mcp_assistant.tools.test_runner   ← subprocess (stdlib)
-  └── mcp_assistant.tui.app             ← textual, all of the above
-
-mcp_assistant.eval.harness
-  ├── mcp_assistant.eval.dataset
-  ├── mcp_assistant.eval.metrics
-  ├── mcp_assistant.eval.report
-  ├── mcp_assistant.llm.{client,prompt_builder,response_parser}
-  └── mcp_assistant.config
-
-External dependencies:
-  requests     — Ollama HTTP client
-  pydantic     — installed but not yet used for schema validation (future use)
-  psutil       — SystemTool metrics
-  textual      — TUI framework
-  rich         — text rendering (textual dependency)
-  tomllib      — .mcprc parsing (Python 3.13 stdlib)
-  pytest       — test runner
-```
-
----
-
-*Last updated: 2026-04-07*
-*Author: K R Shrivathsan*
-*Successor: update the "Last updated" date and your name when you take over.*
+*This document was generated after the complete FastMCP 3.2.3 rewrite of the MCP Terminal Assistant.*

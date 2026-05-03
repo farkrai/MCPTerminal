@@ -8,7 +8,7 @@ def test_default_policy_loads():
     p = PolicyConfig.default()
     assert p.sandbox_root == config.PROJECT_ROOT
     assert p.max_file_size_mb == 10
-    assert "FileHandler.write" in p.confirm_required
+    assert "file.write" in p.confirm_required
 
 
 def test_mcprc_loads(policy):
@@ -33,21 +33,21 @@ def test_env_file_blocked(policy):
 
 
 def test_tool_allowed(policy):
-    assert policy.is_tool_allowed("FileHandler")
-    assert policy.is_tool_allowed("GitTool")
+    assert policy.is_tool_allowed("file")
+    assert policy.is_tool_allowed("git")
 
 
 def test_disabled_tool_blocked():
     p = PolicyConfig.default()
-    p.disabled_tools = ["SystemTool"]
-    assert not p.is_tool_allowed("SystemTool")
-    assert p.is_tool_allowed("GitTool")
+    p.disabled_tools = ["system"]
+    assert not p.is_tool_allowed("system")
+    assert p.is_tool_allowed("git")
 
 
 def test_confirmation_required(policy):
-    assert policy.requires_confirmation("FileHandler", "write")
-    assert policy.requires_confirmation("GitTool", "commit")
-    assert not policy.requires_confirmation("GitTool", "status")
+    assert policy.requires_confirmation("file", "write")
+    assert policy.requires_confirmation("git", "commit")
+    assert not policy.requires_confirmation("git", "status")
 
 
 def test_audit_retention_days(policy):

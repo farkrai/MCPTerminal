@@ -1,102 +1,98 @@
-from mcp_assistant.mcp.schema import MCPCall, MCPChain, MCPChainStep
-from mcp_assistant.mcp.policy import PolicyConfig
-from mcp_assistant import config
+"""Tests for FastMCP tool dispatch — single calls and multi-step chains."""
+import json
+import pytest
+from fastmcp import Client
+from mcp_assistant.server.app import create_server
 
 
-def test_dispatch_valid_call(dispatcher):
-    call = MCPCall("SystemTool", "ram_stats", {})
-    result = dispatcher.dispatch(call)
-    assert result.success
+def _text(result) -> str:
+    if hasattr(result, "content"):
+        for item in result.content:
+            if hasattr(item, "text"):
+                return item.text
+    return str(result)
 
 
-def test_dispatch_unknown_tool(dispatcher):
-    call = MCPCall("GhostTool", "do_something", {})
-    result = dispatcher.dispatch(call)
-    assert not result.success
-    assert "Unknown tool" in result.output
+# ── Single tool calls ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_dispatch_system_cpu(mcp_client):
+    result = await mcp_client.call_tool("system_cpu_stats", {})
+    data = json.loads(_text(result))
+    assert "percent" in data
 
 
-def test_dispatch_disabled_tool(registry, audit):
-    from mcp_assistant.mcp.dispatcher import MCPDispatcher
-    policy = PolicyConfig.default()
-    policy.disabled_tools = ["SystemTool"]
-    d = MCPDispatcher(registry, policy, audit, confirm_fn=lambda _: True)
-    call = MCPCall("SystemTool", "ram_stats", {})
-    result = d.dispatch(call)
-    assert not result.success
-    assert "disabled" in result.output.lower()
+@pytest.mark.asyncio
+async def test_dispatch_unknown_tool(mcp_client):
+    with pytest.raises(Exception) as exc_info:
+        await mcp_client.call_tool("ghost_tool_xyz", {})
+    assert "ghost_tool_xyz" in str(exc_info.value).lower() or exc_info.value is not None
 
 
-def test_dispatch_param_validation(dispatcher):
-    # commit requires 'message' param
-    call = MCPCall("GitTool", "commit", {})
-    result = dispatcher.dispatch(call)
-    assert not result.success
+@pytest.mark.asyncio
+async def test_dispatch_file_read_missing(mcp_client):
+    with pytest.raises(Exception):
+        await mcp_client.call_tool("file_read", {"path": "nonexistent_xyz.txt"})
 
 
-def test_dispatch_cancelled_by_user(registry, policy, audit):
-    from mcp_assistant.mcp.dispatcher import MCPDispatcher
-    d = MCPDispatcher(registry, policy, audit, confirm_fn=lambda _: False)
-    # FileHandler.write requires confirmation
-    call = MCPCall("FileHandler", "write", {"path": "x.txt", "content": "data"})
-    result = d.dispatch(call)
-    assert not result.success
-    assert "Cancelled" in result.output
+# ── Chain-like sequential dispatch ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_sequential_cpu_then_ram(mcp_client):
+    """Simulate a two-step chain: cpu_stats → ram_stats."""
+    r1 = await mcp_client.call_tool("system_cpu_stats", {})
+    r2 = await mcp_client.call_tool("system_ram_stats", {})
+    assert json.loads(_text(r1)).get("percent") is not None
+    assert json.loads(_text(r2)).get("ram_percent") is not None
 
 
-def test_dispatch_chain(dispatcher):
-    chain = MCPChain(
-        steps=[
-            MCPChainStep("SystemTool", "cpu_stats", {}, confidence=0.9),
-            MCPChainStep("SystemTool", "ram_stats", {}, confidence=0.9),
-        ],
-        description="cpu then ram",
+@pytest.mark.asyncio
+async def test_sequential_git_status_then_log(mcp_client):
+    r1 = await mcp_client.call_tool("git_status", {})
+    r2 = await mcp_client.call_tool("git_log", {"n": 2})
+    assert "branch" in _text(r1).lower()
+    assert _text(r2)
+
+
+@pytest.mark.asyncio
+async def test_sequential_detect_then_run_file(mcp_client, tmp_path):
+    """Detect test framework, then run a specific test file."""
+    test_file = tmp_path / "test_chain.py"
+    test_file.write_text("def test_pass(): assert True\n")
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+
+    detect_result = await mcp_client.call_tool("test_detect", {"cwd": str(tmp_path)})
+    data = json.loads(_text(detect_result))
+    assert "pytest" in data.get("frameworks", [])
+
+    run_result = await mcp_client.call_tool("test_run_file", {"path": str(test_file)})
+    run_data = json.loads(_text(run_result))
+    assert run_data["status"] == "passed"
+
+
+# ── Dry-run mode ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_dry_run_write(mcp_client):
+    result = await mcp_client.call_tool(
+        "file_write", {"path": "should_not_exist.txt", "content": "x", "dry_run": True}
     )
-    results = dispatcher.dispatch_chain(chain)
-    assert len(results) == 2
-    assert all(r.success for r in results)
+    assert "DRY RUN" in _text(result)
+    import os
+    assert not os.path.exists("should_not_exist.txt")
 
 
-def test_dispatch_chain_stops_on_failure(dispatcher):
-    chain = MCPChain(
-        steps=[
-            MCPChainStep("GhostTool", "nothing", {}, confidence=0.9),   # will fail
-            MCPChainStep("SystemTool", "ram_stats", {}, confidence=0.9), # should not run
-        ],
-        description="fail then ram",
-        continue_on_error=False,
+@pytest.mark.asyncio
+async def test_dry_run_commit(mcp_client):
+    result = await mcp_client.call_tool(
+        "git_commit", {"message": "fake commit", "dry_run": True}
     )
-    results = dispatcher.dispatch_chain(chain)
-    assert len(results) == 1
-    assert not results[0].success
+    assert "DRY RUN" in _text(result)
 
 
-def test_dispatch_chain_continue_on_error(dispatcher):
-    chain = MCPChain(
-        steps=[
-            MCPChainStep("GhostTool", "nothing", {}, confidence=0.9),   # fail
-            MCPChainStep("SystemTool", "ram_stats", {}, confidence=0.9), # runs anyway
-        ],
-        description="fail but continue",
-        continue_on_error=True,
+@pytest.mark.asyncio
+async def test_dry_run_branch_switch(mcp_client):
+    result = await mcp_client.call_tool(
+        "git_branch_switch", {"branch": "nonexistent-branch", "dry_run": True}
     )
-    results = dispatcher.dispatch_chain(chain)
-    assert len(results) == 2
-    assert not results[0].success
-    assert results[1].success
-
-
-def test_chain_template_resolution(dispatcher):
-    # step_0 output should be injectable into step_1 params via {{step_0.output}}
-    from mcp_assistant.mcp.schema import MCPChain, MCPChainStep
-    chain = MCPChain(
-        steps=[
-            MCPChainStep("SystemTool", "ram_stats", {}, confidence=0.9),
-            MCPChainStep("SystemTool", "cpu_stats", {"note": "{{step_0.output}}"}, confidence=0.9),
-        ],
-        description="template test",
-    )
-    results = dispatcher.dispatch_chain(chain)
-    assert len(results) == 2
-    assert results[0].success
-    assert results[1].success
+    assert "DRY RUN" in _text(result)

@@ -4,7 +4,7 @@ from pathlib import Path
 from mcp_assistant.eval.dataset import load_dataset, EvalItem
 from mcp_assistant.eval.metrics import EvalReport, EvalResult, build_eval_result
 from mcp_assistant.eval.report import generate_report
-from mcp_assistant.mcp.schema import MCPCall, MCPChain, MCPChainStep
+from mcp_assistant.server.schema import ToolCall, ToolChain, ToolChainStep
 from mcp_assistant import config
 
 DATASET_PATH = config.PROJECT_ROOT / "eval_data" / "eval_dataset.json"
@@ -55,20 +55,20 @@ def test_dataset_counts_per_category():
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
-def _make_item(id=1, gt_tool="FileHandler", gt_action="list", category="file_ops", difficulty="easy"):
+def _make_item(id=1, gt_tool="file_list", gt_action="", category="file_ops", difficulty="easy"):
     return EvalItem(
         id=id, nl_input="test", ground_truth={"tool": gt_tool, "action": gt_action, "params": {}},
         category=category, difficulty=difficulty,
     )
 
 
-def _make_call(tool="FileHandler", action="list", conf=0.9):
-    return MCPCall(tool=tool, action=action, params={}, confidence=conf)
+def _make_call(tool="file_list", conf=0.9):
+    return ToolCall(tool=tool, params={}, confidence=conf)
 
 
 def test_build_eval_result_correct():
     item = _make_item()
-    call = _make_call("FileHandler", "list")
+    call = _make_call("file_list")
     result = build_eval_result(item, call, latency_ms=500, parse_failed=False, error=None)
     assert result.tool_match
     assert result.action_match
@@ -76,17 +76,9 @@ def test_build_eval_result_correct():
     assert not result.hallucinated
 
 
-def test_build_eval_result_wrong_action():
-    item = _make_item(gt_tool="FileHandler", gt_action="list")
-    call = _make_call("FileHandler", "read")
-    result = build_eval_result(item, call, latency_ms=500, parse_failed=False, error=None)
-    assert result.tool_match
-    assert not result.action_match
-
-
 def test_build_eval_result_wrong_tool():
-    item = _make_item(gt_tool="FileHandler", gt_action="list")
-    call = _make_call("GitTool", "status")
+    item = _make_item(gt_tool="file_list")
+    call = _make_call("git_status")
     result = build_eval_result(item, call, latency_ms=500, parse_failed=False, error=None)
     assert not result.tool_match
     assert not result.action_match
@@ -102,16 +94,16 @@ def test_build_eval_result_parse_failed():
 
 def test_build_eval_result_hallucination():
     item = _make_item()
-    call = _make_call(tool="GhostTool", action="vanish")
+    call = _make_call(tool="GhostTool_xyz")
     result = build_eval_result(item, call, latency_ms=200, parse_failed=False, error=None)
     assert result.hallucinated
 
 
 def test_build_eval_result_chain():
-    item = _make_item(gt_tool="GitTool", gt_action="status")
-    chain = MCPChain(steps=[
-        MCPChainStep(tool="GitTool", action="status", params={}, confidence=0.9),
-        MCPChainStep(tool="GitTool", action="diff", params={}, confidence=0.88),
+    item = _make_item(gt_tool="git_status")
+    chain = ToolChain(steps=[
+        ToolChainStep(tool="git_status", params={}, confidence=0.9),
+        ToolChainStep(tool="git_diff",   params={}, confidence=0.88),
     ])
     result = build_eval_result(item, chain, latency_ms=800, parse_failed=False, error=None)
     assert result.is_chain_response
@@ -131,15 +123,15 @@ def _make_report(results):
 
 def test_report_tool_accuracy():
     item = _make_item()
-    r1 = build_eval_result(item, _make_call("FileHandler", "list"), 100, False, None)
-    r2 = build_eval_result(item, _make_call("GitTool", "status"), 100, False, None)
+    r1 = build_eval_result(item, _make_call("file_list"), 100, False, None)
+    r2 = build_eval_result(item, _make_call("git_status"), 100, False, None)
     report = _make_report([r1, r2])
     assert report.tool_accuracy() == pytest.approx(0.5)
 
 
 def test_report_action_accuracy_full_match():
     item = _make_item()
-    results = [build_eval_result(item, _make_call("FileHandler", "list"), 100, False, None) for _ in range(4)]
+    results = [build_eval_result(item, _make_call("file_list"), 100, False, None) for _ in range(4)]
     report = _make_report(results)
     assert report.action_accuracy() == pytest.approx(1.0)
 
@@ -154,8 +146,8 @@ def test_report_parse_failure_rate():
 
 def test_report_hallucination_rate():
     item = _make_item()
-    r_ok = build_eval_result(item, _make_call("FileHandler", "list"), 100, False, None)
-    r_hal = build_eval_result(item, _make_call("GhostTool", "vanish"), 100, False, None)
+    r_ok = build_eval_result(item, _make_call("file_list"), 100, False, None)
+    r_hal = build_eval_result(item, _make_call("GhostTool_xyz"), 100, False, None)
     report = _make_report([r_ok, r_hal])
     assert report.hallucination_rate() == pytest.approx(0.5)
 
@@ -169,12 +161,12 @@ def test_report_latency():
 
 def test_report_per_category():
     items = [
-        _make_item(id=1, gt_tool="FileHandler", gt_action="list", category="file_ops"),
-        _make_item(id=2, gt_tool="GitTool",     gt_action="status", category="git_ops"),
+        _make_item(id=1, gt_tool="file_list", category="file_ops"),
+        _make_item(id=2, gt_tool="git_status", category="git_ops"),
     ]
     results = [
-        build_eval_result(items[0], _make_call("FileHandler", "list"), 100, False, None),
-        build_eval_result(items[1], _make_call("GitTool", "status"),   200, False, None),
+        build_eval_result(items[0], _make_call("file_list"),  100, False, None),
+        build_eval_result(items[1], _make_call("git_status"), 200, False, None),
     ]
     report = _make_report(results)
     cats = report.per_category()

@@ -11,8 +11,8 @@ MCPRC_FILE = PROJECT_ROOT / ".mcprc"
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
 OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "phi3:latest")
-OLLAMA_TIMEOUT: int = int(os.environ.get("OLLAMA_TIMEOUT", "120"))
+OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "deepseek-r1:8b")
+OLLAMA_TIMEOUT: int = int(os.environ.get("OLLAMA_TIMEOUT", "300"))
 
 # Temperature for structured tool-call generation (low = deterministic)
 OLLAMA_TEMP_STRUCTURED: float = 0.1

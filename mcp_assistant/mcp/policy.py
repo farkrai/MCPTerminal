@@ -61,10 +61,10 @@ class PolicyConfig:
             allowed_tools=[],
             disabled_tools=[],
             confirm_required={
-                "FileHandler.write",
-                "FileHandler.delete",
-                "GitTool.commit",
-                "SystemTool.kill_process",
+                "file.write",
+                "file.delete",
+                "git.commit",
+                "system.kill_process",
             },
             confirm_all_destructive=True,
             dry_run_mode=False,
@@ -87,8 +87,8 @@ class PolicyConfig:
         sandbox = Path(security.get("sandbox_root", str(config.PROJECT_ROOT))).resolve()
 
         confirm_list = confirmations.get("confirm_required", [
-            "FileHandler.write", "FileHandler.delete",
-            "GitTool.commit", "SystemTool.kill_process",
+            "file.write", "file.delete",
+            "git.commit", "system.kill_process",
         ])
 
         return cls(

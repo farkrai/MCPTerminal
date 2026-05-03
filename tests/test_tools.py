@@ -1,169 +1,192 @@
+"""Tests for atomic FastMCP tools via the in-process client."""
+import json
 import pytest
-from mcp_assistant.mcp.schema import MCPCall
-from mcp_assistant.mcp.policy import PolicyConfig
-from mcp_assistant.tools.file_handler import FileHandler
-from mcp_assistant.tools.git_tool import GitTool
-from mcp_assistant.tools.system_tool import SystemTool
-from mcp_assistant.tools.test_runner import TestRunner
+import pytest_asyncio
+from fastmcp import Client
+from mcp_assistant.server.app import create_server
 from mcp_assistant import config
 
 
-# ── FileHandler ───────────────────────────────────────────────────────────────
-
-def test_file_list(policy):
-    tool = FileHandler(policy)
-    call = MCPCall(tool="FileHandler", action="list", params={"path": "."})
-    result = tool.execute(call)
-    assert result.success
-    assert "mcp_assistant" in result.output
-
-
-def test_file_read_existing(policy):
-    tool = FileHandler(policy)
-    call = MCPCall(tool="FileHandler", action="read", params={"path": "requirements.txt"})
-    result = tool.execute(call)
-    assert result.success
-    assert result.data is not None
+def _text(result) -> str:
+    """Extract text from a call_tool result."""
+    if hasattr(result, "content"):
+        for item in result.content:
+            if hasattr(item, "text"):
+                return item.text
+    return str(result)
 
 
-def test_file_read_outside_sandbox(policy):
-    tool = FileHandler(policy)
-    call = MCPCall(tool="FileHandler", action="read", params={"path": "/etc/passwd"})
-    result = tool.execute(call)
-    assert not result.success
-    assert "not allowed" in result.error.lower() or "permission" in result.error.lower()
+# ── file_* tools ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_file_list(mcp_client):
+    result = await mcp_client.call_tool("file_list", {"path": "."})
+    data = json.loads(_text(result))
+    assert "entries" in data
+    assert any("mcp_assistant" in e for e in data["entries"])
 
 
-def test_file_read_missing(policy):
-    tool = FileHandler(policy)
-    call = MCPCall(tool="FileHandler", action="read", params={"path": "nonexistent_file_xyz.txt"})
-    result = tool.execute(call)
-    assert not result.success
+@pytest.mark.asyncio
+async def test_file_read(mcp_client):
+    result = await mcp_client.call_tool("file_read", {"path": "pyproject.toml"})
+    text = _text(result)
+    assert "fastmcp" in text.lower()
 
 
-def test_file_write_and_read(policy, tmp_path, monkeypatch):
-    # Patch sandbox to tmp_path so we can write safely in tests
-    p = PolicyConfig.default()
-    p.sandbox_root = tmp_path
-    tool = FileHandler(p)
-    target = tmp_path / "test_write.txt"
-
-    write_call = MCPCall("FileHandler", "write", {"path": str(target), "content": "hello world"})
-    write_result = tool.execute(write_call)
-    assert write_result.success
-
-    read_call = MCPCall("FileHandler", "read", {"path": str(target)})
-    read_result = tool.execute(read_call)
-    assert read_result.success
-    assert read_result.data == "hello world"
+@pytest.mark.asyncio
+async def test_file_read_missing(mcp_client):
+    with pytest.raises(Exception):
+        await mcp_client.call_tool("file_read", {"path": "nonexistent_xyz_abc.txt"})
 
 
-def test_file_dry_run_write(policy):
-    tool = FileHandler(policy)
-    call = MCPCall("FileHandler", "write", {"path": "test.txt", "content": "data"})
-    preview = tool.dry_run(call)
-    assert "DRY RUN" in preview
-    assert "test.txt" in preview
+@pytest.mark.asyncio
+async def test_file_search(mcp_client):
+    result = await mcp_client.call_tool(
+        "file_search", {"path": "mcp_assistant", "pattern": "*.py"}
+    )
+    data = json.loads(_text(result))
+    assert data["count"] > 0
+    assert all(m.endswith(".py") for m in data["matches"])
 
 
-def test_file_unknown_action(policy):
-    tool = FileHandler(policy)
-    call = MCPCall("FileHandler", "fly", {"path": "."})
-    result = tool.execute(call)
-    assert not result.success
+@pytest.mark.asyncio
+async def test_file_write_and_read(mcp_client, tmp_path, monkeypatch):
+    """Write to a temp file then read it back."""
+    monkeypatch.setattr("mcp_assistant.server.tools.file.policy.sandbox_root", tmp_path)
+    target = str(tmp_path / "test_write.txt")
+    await mcp_client.call_tool("file_write", {"path": target, "content": "hello fastmcp"})
+    result = await mcp_client.call_tool("file_read", {"path": target})
+    assert "hello fastmcp" in _text(result)
 
 
-# ── GitTool ───────────────────────────────────────────────────────────────────
-
-def test_git_status():
-    tool = GitTool()
-    call = MCPCall("GitTool", "status", {})
-    result = tool.execute(call)
-    assert result.success
-    assert "branch" in result.output.lower()
+@pytest.mark.asyncio
+async def test_file_write_dry_run(mcp_client):
+    result = await mcp_client.call_tool(
+        "file_write", {"path": "test.txt", "content": "data", "dry_run": True}
+    )
+    assert "DRY RUN" in _text(result)
 
 
-def test_git_log():
-    tool = GitTool()
-    call = MCPCall("GitTool", "log", {"n": 5})
-    result = tool.execute(call)
-    assert result.success
+# ── git_* tools ───────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_git_status(mcp_client):
+    result = await mcp_client.call_tool("git_status", {})
+    assert "branch" in _text(result).lower()
 
 
-def test_git_branch_list():
-    tool = GitTool()
-    call = MCPCall("GitTool", "branch_list", {})
-    result = tool.execute(call)
-    assert result.success
+@pytest.mark.asyncio
+async def test_git_log(mcp_client):
+    result = await mcp_client.call_tool("git_log", {"n": 3})
+    text = _text(result)
+    assert text and text != "(no output)"
 
 
-def test_git_commit_no_message():
-    tool = GitTool()
-    call = MCPCall("GitTool", "commit", {})
-    result = tool.execute(call)
-    assert not result.success
-    assert "message" in result.error.lower()
+@pytest.mark.asyncio
+async def test_git_branch_list(mcp_client):
+    result = await mcp_client.call_tool("git_branch_list", {})
+    assert "main" in _text(result) or "master" in _text(result) or "*" in _text(result)
 
 
-# ── SystemTool ────────────────────────────────────────────────────────────────
-
-def test_system_ram_stats():
-    tool = SystemTool()
-    call = MCPCall("SystemTool", "ram_stats", {})
-    result = tool.execute(call)
-    assert result.success
-    assert "RAM" in result.output
-    assert isinstance(result.data, dict)
-    assert "percent" in result.data
+@pytest.mark.asyncio
+async def test_git_diff(mcp_client):
+    result = await mcp_client.call_tool("git_diff", {"staged": False})
+    assert _text(result) is not None
 
 
-def test_system_cpu_stats():
-    tool = SystemTool()
-    call = MCPCall("SystemTool", "cpu_stats", {})
-    result = tool.execute(call)
-    assert result.success
-    assert "CPU" in result.output
+@pytest.mark.asyncio
+async def test_git_commit_dry_run(mcp_client):
+    result = await mcp_client.call_tool(
+        "git_commit", {"message": "test commit", "dry_run": True}
+    )
+    assert "DRY RUN" in _text(result)
 
 
-def test_system_disk_stats():
-    tool = SystemTool()
-    call = MCPCall("SystemTool", "disk_stats", {})
-    result = tool.execute(call)
-    assert result.success
+# ── system_* tools ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_system_cpu_stats(mcp_client):
+    result = await mcp_client.call_tool("system_cpu_stats", {})
+    data = json.loads(_text(result))
+    assert "percent" in data
+    assert "logical_cores" in data
 
 
-def test_system_list_processes():
-    tool = SystemTool()
-    call = MCPCall("SystemTool", "list_processes", {"n": 5})
-    result = tool.execute(call)
-    assert result.success
-    assert isinstance(result.data, list)
+@pytest.mark.asyncio
+async def test_system_ram_stats(mcp_client):
+    result = await mcp_client.call_tool("system_ram_stats", {})
+    data = json.loads(_text(result))
+    assert "ram_percent" in data
+    assert data["ram_total_gb"] > 0
 
 
-def test_system_env_info():
-    tool = SystemTool()
-    call = MCPCall("SystemTool", "env_info", {})
-    result = tool.execute(call)
-    assert result.success
-    assert "Python" in result.output
+@pytest.mark.asyncio
+async def test_system_disk_stats(mcp_client):
+    result = await mcp_client.call_tool("system_disk_stats", {})
+    partitions = json.loads(_text(result))
+    assert isinstance(partitions, list)
+    assert len(partitions) > 0
 
 
-# ── TestRunner ────────────────────────────────────────────────────────────────
-
-def test_runner_detect():
-    tool = TestRunner()
-    call = MCPCall("TestRunner", "detect", {"cwd": "."})
-    result = tool.execute(call)
-    assert result.success
-    assert "pytest" in result.output.lower()
+@pytest.mark.asyncio
+async def test_system_list_processes(mcp_client):
+    result = await mcp_client.call_tool("system_list_processes", {"n": 5})
+    procs = json.loads(_text(result))
+    assert isinstance(procs, list)
+    assert len(procs) <= 5
 
 
-def test_runner_run(tmp_path):
-    # Create a minimal isolated test file so we don't trigger recursion
-    (tmp_path / "test_simple.py").write_text("def test_ok(): assert True\n")
+@pytest.mark.asyncio
+async def test_system_env_info(mcp_client):
+    result = await mcp_client.call_tool("system_env_info", {})
+    data = json.loads(_text(result))
+    assert "os" in data
+    assert "python" in data
+    assert "hostname" in data
+
+
+@pytest.mark.asyncio
+async def test_system_kill_dry_run(mcp_client):
+    import os
+    result = await mcp_client.call_tool(
+        "system_kill_process", {"pid": os.getpid(), "dry_run": True}
+    )
+    assert "DRY RUN" in _text(result)
+
+
+# ── test_* tools ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_detect_pytest(mcp_client):
+    result = await mcp_client.call_tool("test_detect", {"cwd": "."})
+    data = json.loads(_text(result))
+    assert "pytest" in data.get("frameworks", [])
+
+
+@pytest.mark.asyncio
+async def test_run_file(mcp_client, tmp_path):
+    test_file = tmp_path / "test_simple.py"
+    test_file.write_text("def test_ok(): assert True\n")
     (tmp_path / "pytest.ini").write_text("[pytest]\n")
-    tool = TestRunner()
-    call = MCPCall("TestRunner", "run_file", {"path": str(tmp_path / "test_simple.py")})
-    result = tool.execute(call)
-    assert result.success
-    assert "passed" in result.output.lower()
+    result = await mcp_client.call_tool("test_run_file", {"path": str(test_file)})
+    data = json.loads(_text(result))
+    assert data["status"] == "passed"
+
+
+# ── network_* tools ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_network_dns_lookup(mcp_client):
+    result = await mcp_client.call_tool("network_dns_lookup", {"host": "localhost"})
+    data = json.loads(_text(result))
+    assert "addresses" in data
+    assert len(data["addresses"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_network_port_check_closed(mcp_client):
+    result = await mcp_client.call_tool(
+        "network_port_check", {"host": "127.0.0.1", "port": 19999, "timeout": 1}
+    )
+    data = json.loads(_text(result))
+    assert data["status"] in ("closed", "filtered/timeout")

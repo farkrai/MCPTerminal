@@ -1,0 +1,134 @@
+{
+  "name": "mcp-terminal-assistant",
+  "displayName": "MCP Terminal Assistant",
+  "description": "Offline AI-powered terminal assistant with Model Context Protocol integration",
+  "version": "1.0.0",
+  "publisher": "mcp-assistant",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ai",
+    "terminal",
+    "ollama",
+    "mcp",
+    "assistant",
+    "offline"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mcpAssistant.openPanel",
+        "title": "MCP: Open Assistant Panel",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "mcpAssistant.sendCommand",
+        "title": "MCP: Send Command to Assistant"
+      },
+      {
+        "command": "mcpAssistant.toggleDryRun",
+        "title": "MCP: Toggle Dry-Run Mode"
+      },
+      {
+        "command": "mcpAssistant.showTools",
+        "title": "MCP: Show Available Tools"
+      },
+      {
+        "command": "mcpAssistant.verifyAudit",
+        "title": "MCP: Verify Audit Log"
+      },
+      {
+        "command": "mcpAssistant.checkHealth",
+        "title": "MCP: Check Ollama Health"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mcp-assistant",
+          "title": "MCP Assistant",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "mcp-assistant": [
+        {
+          "type": "webview",
+          "id": "mcpAssistant.chatView",
+          "name": "Chat"
+        },
+        {
+          "id": "mcpAssistant.toolsView",
+          "name": "Tools"
+        },
+        {
+          "id": "mcpAssistant.statsView",
+          "name": "System Stats"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "mcpAssistant.toggleDryRun",
+          "when": "view == mcpAssistant.chatView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "MCP Terminal Assistant",
+      "properties": {
+        "mcpAssistant.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Python interpreter with mcp-assistant installed (defaults to workspace venv)"
+        },
+        "mcpAssistant.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama server URL"
+        },
+        "mcpAssistant.model": {
+          "type": "string",
+          "default": "phi3:latest",
+          "description": "Ollama model to use"
+        },
+        "mcpAssistant.dryRunMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable dry-run mode by default"
+        },
+        "mcpAssistant.confidenceThreshold": {
+          "type": "number",
+          "default": 0.5,
+          "description": "Confidence threshold for clarification prompts"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

@@ -1,8 +1,24 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from mcp_assistant.mcp.schema import MCPCall, MCPChain
+from mcp_assistant.server.schema import ToolCall, ToolChain
 
-_KNOWN_TOOLS = {"FileHandler", "GitTool", "SystemTool", "TestRunner"}
+_LEGACY_GT: dict[str, str] = {
+    "FileHandler": "file_read",   # maps old GT tool name to nearest FastMCP equivalent
+    "GitTool": "git_status",
+    "SystemTool": "system_cpu_stats",
+    "TestRunner": "test_detect",
+    "NetworkTool": "network_ping",
+}
+
+_KNOWN_TOOLS = {
+    "file_read", "file_write", "file_list", "file_search", "file_delete",
+    "git_status", "git_diff", "git_log", "git_add", "git_commit",
+    "git_branch_list", "git_branch_switch",
+    "system_cpu_stats", "system_ram_stats", "system_disk_stats",
+    "system_list_processes", "system_kill_process", "system_env_info",
+    "test_detect", "test_run", "test_run_file", "test_explain_failures",
+    "network_ping", "network_dns_lookup", "network_http_probe", "network_port_check",
+}
 
 
 @dataclass
@@ -163,39 +179,41 @@ def build_eval_result(
             item_id=item.id, nl_input=item.nl_input,
             category=item.category, difficulty=item.difficulty,
             is_chain=item.is_chain,
-            gt_tool=gt["tool"], gt_action=gt["action"],
-            pred_tool="(parse_error)", pred_action="(parse_error)",
+            gt_tool=gt.get("tool", ""), gt_action=gt.get("action", ""),
+            pred_tool="(parse_error)", pred_action="",
             pred_confidence=0.0, is_chain_response=False, chain_step_count=0,
             tool_match=False, action_match=False,
             parse_failed=True, hallucinated=False,
             latency_ms=latency_ms, error=error,
         )
 
-    if isinstance(parsed, MCPChain):
+    if isinstance(parsed, ToolChain):
         # For chain responses, evaluate first step against ground truth
         first = parsed.steps[0] if parsed.steps else None
         pred_tool = first.tool if first else "unknown"
-        pred_action = first.action if first else "unknown"
         pred_conf = first.confidence if first else 0.0
         is_chain_resp = True
         step_count = len(parsed.steps)
     else:
         pred_tool = parsed.tool
-        pred_action = parsed.action
         pred_conf = parsed.confidence
         is_chain_resp = False
         step_count = 0
 
-    tool_match = pred_tool == gt["tool"]
-    action_match = tool_match and pred_action == gt["action"]
+    # Support both old "tool.action" ground-truth and new FastMCP "tool_name" format
+    gt_tool = gt.get("tool", "")
+    # Normalise legacy "FileHandler"/"GitTool" etc. to FastMCP names if present
+    gt_tool_fastmcp = _LEGACY_GT.get(gt_tool, gt_tool)
+    tool_match = pred_tool == gt_tool or pred_tool == gt_tool_fastmcp
+    action_match = tool_match  # FastMCP has no separate action — treat full match as action match
     hallucinated = pred_tool not in _KNOWN_TOOLS and pred_tool != "unknown"
 
     return EvalResult(
         item_id=item.id, nl_input=item.nl_input,
         category=item.category, difficulty=item.difficulty,
         is_chain=item.is_chain,
-        gt_tool=gt["tool"], gt_action=gt["action"],
-        pred_tool=pred_tool, pred_action=pred_action,
+        gt_tool=gt.get("tool", ""), gt_action=gt.get("action", ""),
+        pred_tool=pred_tool, pred_action="",
         pred_confidence=pred_conf,
         is_chain_response=is_chain_resp, chain_step_count=step_count,
         tool_match=tool_match, action_match=action_match,

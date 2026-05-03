@@ -1,21 +1,37 @@
+"""Parse raw LLM output into ToolCall / ToolChain objects.
+
+Expected LLM output formats
+----------------------------
+Single call::
+
+    {"tool": "file_read", "params": {"path": "README.md"}, "confidence": 0.95}
+
+Chain::
+
+    {
+      "chain": true,
+      "description": "check status then show diff",
+      "steps": [
+        {"tool": "git_status", "params": {}, "confidence": 0.92},
+        {"tool": "git_diff",   "params": {}, "confidence": 0.90}
+      ]
+    }
+"""
 from __future__ import annotations
 import json
 import re
-from mcp_assistant.mcp.schema import MCPCall, MCPChain, MCPChainStep, ParseError
 
-_REQUIRED_CALL_KEYS = {"tool", "action", "params", "confidence"}
-_REQUIRED_CHAIN_KEYS = {"chain", "steps"}
+from mcp_assistant.server.schema import ParseError, ToolCall, ToolChain, ToolChainStep
 
-# Matches the outermost {...} block even if surrounded by prose or markdown fences
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def parse_response(raw: str) -> MCPCall | MCPChain:
+def parse_response(raw: str) -> ToolCall | ToolChain:
+    """Parse raw LLM text into a ``ToolCall`` or ``ToolChain``.
+
+    Raises :class:`ParseError` if the output is unparseable.
     """
-    Parse raw LLM output into either an MCPCall or MCPChain.
-    Raises ParseError if the output cannot be interpreted.
-    """
-    text = _strip_markdown_fences(raw).strip()
+    text = _strip_thinking_tags(_strip_markdown_fences(raw)).strip()
     data = _extract_json(text)
 
     if data.get("chain") is True:
@@ -23,21 +39,25 @@ def parse_response(raw: str) -> MCPCall | MCPChain:
     return _build_call(data, raw)
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
 def _strip_markdown_fences(text: str) -> str:
-    # Remove ```json ... ``` or ``` ... ``` wrappers that phi3 sometimes adds
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE)
     return text
 
 
+def _strip_thinking_tags(text: str) -> str:
+    """Remove <think>...</think> blocks emitted by reasoning models (deepseek-r1)."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
 def _extract_json(text: str) -> dict:
-    # First try direct parse (happy path)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Fallback: find the first {...} block via regex
     match = _JSON_BLOCK_RE.search(text)
     if match:
         try:
@@ -46,72 +66,42 @@ def _extract_json(text: str) -> dict:
             pass
 
     raise ParseError(
-        f"Could not extract valid JSON from LLM response.\nRaw output:\n{text[:500]}"
+        f"Could not extract valid JSON from LLM response.\nRaw:\n{text[:500]}"
     )
 
 
-def _build_call(data: dict, raw: str) -> MCPCall:
-    missing = _REQUIRED_CALL_KEYS - data.keys()
-    if missing:
-        raise ParseError(f"LLM response missing required keys: {missing}\nGot: {data}")
-
+def _build_call(data: dict, raw: str) -> ToolCall:
+    if "tool" not in data:
+        raise ParseError(f"Missing 'tool' key in LLM response.\nGot: {data}")
     confidence = float(data.get("confidence", 1.0))
     confidence = max(0.0, min(1.0, confidence))
-
-    return MCPCall(
+    return ToolCall(
         tool=str(data["tool"]),
-        action=str(data["action"]),
         params=dict(data.get("params") or {}),
-        raw_response=raw,
         confidence=confidence,
+        raw_response=raw,
     )
 
 
-def _build_chain(data: dict, raw: str) -> MCPChain:
+def _build_chain(data: dict, raw: str) -> ToolChain:
     steps_raw = data.get("steps")
     if not steps_raw or not isinstance(steps_raw, list):
-        raise ParseError(f"Chain response missing 'steps' list.\nGot: {data}")
+        raise ParseError(f"Chain missing 'steps' list.\nGot: {data}")
 
-    steps: list[MCPChainStep] = []
+    steps: list[ToolChainStep] = []
     for i, s in enumerate(steps_raw):
-        if not isinstance(s, dict):
-            raise ParseError(f"Chain step {i} is not a dict: {s}")
-        missing = {"tool", "action"} - s.keys()
-        if missing:
-            raise ParseError(f"Chain step {i} missing keys {missing}: {s}")
+        if not isinstance(s, dict) or "tool" not in s:
+            raise ParseError(f"Chain step {i} invalid: {s}")
         steps.append(
-            MCPChainStep(
+            ToolChainStep(
                 tool=str(s["tool"]),
-                action=str(s["action"]),
                 params=dict(s.get("params") or {}),
                 confidence=float(s.get("confidence", 1.0)),
             )
         )
 
-    return MCPChain(
+    return ToolChain(
         steps=steps,
         description=str(data.get("description", "")),
         continue_on_error=bool(data.get("continue_on_error", False)),
     )
-
-
-# ── CLI smoke test ─────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    samples = [
-        # Clean JSON
-        '{"tool": "FileHandler", "action": "list", "params": {"path": "."}, "confidence": 0.95}',
-        # Wrapped in markdown fence
-        '```json\n{"tool": "GitTool", "action": "status", "params": {}, "confidence": 0.9}\n```',
-        # With surrounding prose (common phi3 behaviour)
-        'Sure! Here is the JSON:\n{"tool": "SystemTool", "action": "cpu_stats", "params": {}, "confidence": 0.88}',
-        # Chain
-        '{"chain": true, "description": "status then diff", "steps": ['
-        '{"tool": "GitTool", "action": "status", "params": {}, "confidence": 0.9},'
-        '{"tool": "GitTool", "action": "diff", "params": {}, "confidence": 0.88}]}',
-    ]
-    for s in samples:
-        try:
-            result = parse_response(s)
-            print(f"OK  → {result}")
-        except ParseError as e:
-            print(f"ERR → {e}")

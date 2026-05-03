@@ -1,3 +1,8 @@
+"""SHA-256-chained JSONL audit logger.
+
+Every entry contains a cryptographic hash of its own content plus a pointer
+to the previous entry's hash, making tampering detectable via verify_chain().
+"""
 from __future__ import annotations
 import hashlib
 import json
@@ -5,7 +10,6 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from mcp_assistant.mcp.schema import MCPCall, MCPResult
 
 _GENESIS_HASH = "0" * 64
 
@@ -17,24 +21,36 @@ class AuditLogger:
         self._session_id = uuid.uuid4().hex[:8]
         self._seq = 0
         self._prev_hash = _GENESIS_HASH
-        self._log_file = self._log_dir / f"audit_{datetime.now().strftime('%Y-%m-%d')}.jsonl"
+        self._log_file = (
+            self._log_dir / f"audit_{datetime.now().strftime('%Y-%m-%d')}.jsonl"
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def log(self, call: MCPCall, result: MCPResult) -> None:
+    def log(
+        self,
+        tool: str,
+        params: dict,
+        output: str,
+        success: bool,
+        error: str | None,
+        duration_ms: float,
+    ) -> None:
+        """Append one audit entry to today's log file."""
         self._seq += 1
-        entry = {
+        entry: dict = {
             "seq": self._seq,
             "session_id": self._session_id,
             "ts": datetime.now(timezone.utc).isoformat(),
             "user": os.getenv("USER", "unknown"),
             "hostname": os.uname().nodename,
-            "call": call.to_dict(),
+            "tool": tool,
+            "params": params,
             "result": {
-                "success": result.success,
-                "output": result.output[:500],
-                "error": result.error,
-                "duration_ms": round(result.duration_ms, 2),
+                "success": success,
+                "output": output[:500],
+                "error": error,
+                "duration_ms": round(duration_ms, 2),
             },
             "prev_hash": self._prev_hash,
         }
@@ -49,6 +65,10 @@ class AuditLogger:
 
     @staticmethod
     def verify_chain(log_file: Path) -> tuple[bool, list[str]]:
+        """Verify every entry's hash and the prev_hash chain.
+
+        Returns ``(True, [])`` if the log is intact, otherwise
+        ``(False, [error_message, ...])``."""
         errors: list[str] = []
         entries: list[dict] = []
 
@@ -64,17 +84,19 @@ class AuditLogger:
 
         prev_hash = _GENESIS_HASH
         for i, entry in enumerate(entries):
-            stored_hash = entry.get("entry_hash", "")
-            entry_without_hash = {k: v for k, v in entry.items() if k != "entry_hash"}
-            expected_hash = _compute_hash(entry_without_hash)
+            stored = entry.get("entry_hash", "")
+            without_hash = {k: v for k, v in entry.items() if k != "entry_hash"}
+            expected = _compute_hash(without_hash)
 
-            if stored_hash != expected_hash:
-                errors.append(f"Entry {i+1} (seq={entry.get('seq')}): hash mismatch — entry was tampered")
-
+            if stored != expected:
+                errors.append(
+                    f"Entry {i+1} (seq={entry.get('seq')}): hash mismatch — tampered"
+                )
             if entry.get("prev_hash") != prev_hash:
-                errors.append(f"Entry {i+1} (seq={entry.get('seq')}): chain broken — prev_hash mismatch")
-
-            prev_hash = stored_hash
+                errors.append(
+                    f"Entry {i+1} (seq={entry.get('seq')}): chain broken — prev_hash mismatch"
+                )
+            prev_hash = stored
 
         return len(errors) == 0, errors
 
@@ -84,7 +106,8 @@ def _compute_hash(entry: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# ── CLI entry point ───────────────────────────────────────────────────────────
+
 def cli_verify(args: list[str] | None = None) -> None:
     import sys
     argv = args if args is not None else sys.argv[1:]
