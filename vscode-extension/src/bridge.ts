@@ -1,9 +1,13 @@
 /**
  * MCPBridge — communicates with the Python MCP assistant backend via subprocess.
  * Sends JSON commands, receives JSON results.
+ *
+ * The Python backend was refactored to FastMCP in v1.0. All subprocess scripts
+ * use the new mcp_assistant.server.* module hierarchy and pass user input via
+ * environment variables (not inline string interpolation) to prevent injection.
  */
 import * as vscode from 'vscode';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 import * as path from 'path';
 
 export interface MCPCommandResult {
@@ -31,20 +35,15 @@ export class MCPBridge {
         this.outputChannel = outputChannel;
     }
 
-    /**
-     * Get the Python path — prefers config, falls back to workspace venv.
-     */
     private getPythonPath(): string {
         const config = vscode.workspace.getConfiguration('mcpAssistant');
         const configured = config.get<string>('pythonPath', '');
         if (configured) {
             return configured;
         }
-
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (workspaceFolders) {
-            const venvPath = path.join(workspaceFolders[0].uri.fsPath, 'venv', 'bin', 'python');
-            return venvPath;
+            return path.join(workspaceFolders[0].uri.fsPath, 'venv', 'bin', 'python');
         }
         return 'python3';
     }
@@ -57,10 +56,10 @@ export class MCPBridge {
         return process.cwd();
     }
 
-    /**
-     * Execute a Python one-shot command and return parsed JSON result.
-     */
-    private async runPythonCommand(script: string): Promise<string> {
+    private async runPythonCommand(
+        script: string,
+        extraEnv: Record<string, string> = {},
+    ): Promise<string> {
         return new Promise((resolve, reject) => {
             const pythonPath = this.getPythonPath();
             const cwd = this.getWorkingDir();
@@ -69,7 +68,7 @@ export class MCPBridge {
 
             const proc = spawn(pythonPath, ['-c', script], {
                 cwd,
-                env: { ...process.env },
+                env: { ...process.env, ...extraEnv },
                 timeout: 120000,
             });
 
@@ -96,83 +95,103 @@ export class MCPBridge {
 
     /**
      * Send a natural-language command to the MCP assistant.
+     * User input is passed via MCP_USER_INPUT env var to avoid injection.
      */
     async sendCommand(input: string): Promise<MCPCommandResult> {
-        const escapedInput = input.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
         const config = vscode.workspace.getConfiguration('mcpAssistant');
 
         const script = `
-import json, sys, os
-os.environ.setdefault('OLLAMA_MODEL', '${config.get<string>('model', 'phi3:latest')}')
-os.environ.setdefault('OLLAMA_BASE_URL', '${config.get<string>('ollamaUrl', 'http://localhost:11434')}')
-os.environ.setdefault('CONFIDENCE_THRESHOLD', '${config.get<number>('confidenceThreshold', 0.5)}')
+import asyncio, json, os, time
 
-from mcp_assistant import config as mcfg
-from mcp_assistant.llm.client import OllamaClient
-from mcp_assistant.llm.prompt_builder import PromptBuilder
-from mcp_assistant.llm.response_parser import parse_response
-from mcp_assistant.llm.confidence import register_known_tools
-from mcp_assistant.mcp.schema import MCPCall, MCPChain
-from mcp_assistant.mcp.registry import ToolRegistry
-from mcp_assistant.mcp.dispatcher import MCPDispatcher
-from mcp_assistant.mcp.policy import PolicyConfig
-from mcp_assistant.audit.logger import AuditLogger
-from mcp_assistant.tools.file_handler import FileHandler
-from mcp_assistant.tools.git_tool import GitTool
-from mcp_assistant.tools.system_tool import SystemTool
-from mcp_assistant.tools.test_runner import TestRunner
-from mcp_assistant.tools.network_tool import NetworkTool
+async def main():
+    from fastmcp import Client
+    from mcp_assistant import config as mcfg
+    from mcp_assistant.llm.client import OllamaClient
+    from mcp_assistant.llm.prompt_builder import PromptBuilder
+    from mcp_assistant.llm.response_parser import parse_response, ParseError
+    from mcp_assistant.llm.confidence import register_known_tools
+    from mcp_assistant.server.schema import ToolCall, ToolChain
+    from mcp_assistant.server.app import get_server
+    from mcp_assistant.server.state import policy
 
-mcfg.ensure_dirs()
-policy = PolicyConfig.load_or_default(mcfg.MCPRC_FILE)
-policy.dry_run_mode = ${config.get<boolean>('dryRunMode', false) ? 'True' : 'False'}
-client = OllamaClient()
-registry = ToolRegistry()
-registry.register(FileHandler(policy))
-registry.register(GitTool())
-registry.register(SystemTool())
-registry.register(TestRunner(llm_client=client))
-registry.register(NetworkTool())
-registry.discover_plugins(mcfg.PLUGINS_DIR)
-register_known_tools(registry.tool_names())
+    mcfg.ensure_dirs()
+    policy.dry_run_mode = os.environ.get('MCP_DRY_RUN', 'false') == 'true'
+    user_input = os.environ['MCP_USER_INPUT']
 
-audit = AuditLogger(mcfg.AUDIT_LOG_DIR)
-dispatcher = MCPDispatcher(registry, policy, audit, confirm_fn=lambda _: True)
-builder = PromptBuilder(registry.generate_summary())
-system = builder.system_prompt()
-prompt = builder.user_prompt('${escapedInput}')
+    mcp = get_server()
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+        register_known_tools({t.name for t in tools})
 
-raw = client.generate(prompt, system=system)
-parsed = parse_response(raw)
+        builder = PromptBuilder()
+        builder.update_from_fastmcp_tools(tools)
+        llm = OllamaClient()
+        raw = await asyncio.to_thread(
+            lambda: llm.generate(builder.user_prompt(user_input), system=builder.system_prompt())
+        )
 
-if isinstance(parsed, MCPCall):
-    result = dispatcher.dispatch(parsed)
-    print(json.dumps({
-        "success": result.success,
-        "output": result.output,
-        "error": result.error,
-        "tool": result.call.tool,
-        "action": result.call.action,
-        "duration_ms": result.duration_ms,
-        "confidence": result.call.confidence,
-    }))
-elif isinstance(parsed, MCPChain):
-    results = dispatcher.dispatch_chain(parsed)
-    combined = " | ".join(r.output[:200] for r in results)
-    all_ok = all(r.success for r in results)
-    print(json.dumps({
-        "success": all_ok,
-        "output": combined,
-        "error": None if all_ok else "One or more chain steps failed",
-        "tool": "chain",
-        "action": parsed.description,
-        "duration_ms": sum(r.duration_ms for r in results),
-        "confidence": min(s.confidence for s in parsed.steps),
-    }))
+        try:
+            parsed = parse_response(raw)
+        except ParseError as e:
+            print(json.dumps({"success": False, "output": f"Parse error: {e}", "error": str(e)}))
+            return
+
+        def extract(result) -> str:
+            if hasattr(result, "content"):
+                return "".join(i.text for i in result.content if hasattr(i, "text"))
+            if hasattr(result, "data") and result.data:
+                return json.dumps(result.data, indent=2)
+            return str(result)
+
+        start = time.perf_counter()
+
+        if isinstance(parsed, ToolCall):
+            try:
+                raw_r = await client.call_tool(parsed.tool, parsed.params)
+                output, success, error = extract(raw_r), True, None
+            except Exception as exc:
+                output, success, error = str(exc), False, str(exc)
+            print(json.dumps({
+                "success": success, "output": output, "error": error,
+                "tool": parsed.tool, "action": parsed.tool,
+                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                "confidence": parsed.confidence,
+            }))
+
+        elif isinstance(parsed, ToolChain):
+            results, all_ok, total = [], True, 0.0
+            for step in parsed.steps:
+                t0 = time.perf_counter()
+                try:
+                    raw_r = await client.call_tool(step.tool, step.params)
+                    o, ok = extract(raw_r), True
+                except Exception as exc:
+                    o, ok = str(exc), False
+                    all_ok = False
+                total += (time.perf_counter() - t0) * 1000
+                results.append({"output": o, "success": ok})
+                if not ok and not parsed.continue_on_error:
+                    break
+            print(json.dumps({
+                "success": all_ok,
+                "output": " | ".join(r["output"][:200] for r in results),
+                "error": None if all_ok else "One or more chain steps failed",
+                "tool": "chain", "action": parsed.description,
+                "duration_ms": round(total, 2),
+                "confidence": parsed.min_confidence(),
+            }))
+
+asyncio.run(main())
 `;
 
         try {
-            const raw = await this.runPythonCommand(script);
+            const raw = await this.runPythonCommand(script, {
+                MCP_USER_INPUT: input,
+                MCP_DRY_RUN: config.get<boolean>('dryRunMode', false) ? 'true' : 'false',
+                OLLAMA_MODEL: config.get<string>('model', 'phi3:latest'),
+                OLLAMA_BASE_URL: config.get<string>('ollamaUrl', 'http://localhost:11434'),
+                CONFIDENCE_THRESHOLD: String(config.get<number>('confidenceThreshold', 0.5)),
+            });
             return JSON.parse(raw) as MCPCommandResult;
         } catch (err: any) {
             return {
@@ -184,38 +203,35 @@ elif isinstance(parsed, MCPChain):
     }
 
     /**
-     * Get list of available tools.
+     * Get list of available tools, grouped by namespace prefix (file, git, system, …).
      */
     async getToolList(): Promise<MCPToolInfo[]> {
         const script = `
-import json
-from mcp_assistant import config as mcfg
-from mcp_assistant.mcp.registry import ToolRegistry
-from mcp_assistant.mcp.policy import PolicyConfig
-from mcp_assistant.tools.file_handler import FileHandler
-from mcp_assistant.tools.git_tool import GitTool
-from mcp_assistant.tools.system_tool import SystemTool
-from mcp_assistant.tools.test_runner import TestRunner
-from mcp_assistant.tools.network_tool import NetworkTool
+import asyncio, json
 
-mcfg.ensure_dirs()
-policy = PolicyConfig.load_or_default(mcfg.MCPRC_FILE)
-registry = ToolRegistry()
-registry.register(FileHandler(policy))
-registry.register(GitTool())
-registry.register(SystemTool())
-registry.register(TestRunner())
-registry.register(NetworkTool())
-registry.discover_plugins(mcfg.PLUGINS_DIR)
+async def main():
+    from fastmcp import Client
+    from mcp_assistant import config as mcfg
+    from mcp_assistant.server.app import get_server
 
-tools = []
-for t in registry.all_tools():
-    tools.append({
-        "name": t.TOOL_NAME,
-        "description": t.TOOL_DESCRIPTION,
-        "actions": list(t.SUPPORTED_ACTIONS.keys()),
-    })
-print(json.dumps(tools))
+    mcfg.ensure_dirs()
+    mcp = get_server()
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+
+    namespaces: dict = {}
+    for t in tools:
+        if t.name.startswith(("prompt_", "resource_")):
+            continue
+        ns = t.name.split("_", 1)[0]
+        if ns not in namespaces:
+            desc = (t.description or "").splitlines()[0][:80] if ns == t.name else f"{ns.capitalize()} tools"
+            namespaces[ns] = {"name": ns, "description": desc, "actions": []}
+        namespaces[ns]["actions"].append(t.name)
+
+    print(json.dumps(list(namespaces.values())))
+
+asyncio.run(main())
 `;
         try {
             const raw = await this.runPythonCommand(script);
@@ -243,13 +259,12 @@ print("true" if c.is_available() else "false")
     }
 
     /**
-     * Verify today's audit log.
+     * Verify today's audit log chain integrity.
      */
     async verifyAudit(): Promise<MCPCommandResult> {
         const script = `
 import json
 from datetime import datetime
-from pathlib import Path
 from mcp_assistant import config as mcfg
 from mcp_assistant.audit.logger import AuditLogger
 
@@ -273,6 +288,6 @@ else:
     }
 
     dispose() {
-        // Cleanup if needed
+        // No persistent subprocess to clean up — each call spawns a one-shot process.
     }
 }
