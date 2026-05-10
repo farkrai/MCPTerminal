@@ -61,6 +61,36 @@ class AuditLogger:
         with self._log_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=True) + "\n")
 
+    def log_parse_error(
+        self,
+        user_input: str,
+        raw_response: str,
+        attempt: int,
+    ) -> None:
+        """Log a failed LLM parse attempt to the audit chain."""
+        self._seq += 1
+        entry: dict = {
+            "seq": self._seq,
+            "session_id": self._session_id,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "user": os.getenv("USER", "unknown"),
+            "hostname": os.uname().nodename,
+            "tool": "_llm_parse_error",
+            "params": {"user_input": user_input, "attempt": attempt},
+            "result": {
+                "success": False,
+                "raw_response": raw_response,
+                "error": "LLM response could not be parsed as a valid JSON tool call",
+                "duration_ms": 0.0,
+            },
+            "prev_hash": self._prev_hash,
+        }
+        entry_hash = _compute_hash(entry)
+        entry["entry_hash"] = entry_hash
+        self._prev_hash = entry_hash
+        with self._log_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=True) + "\n")
+
     # ── Chain verification ────────────────────────────────────────────────────
 
     @staticmethod

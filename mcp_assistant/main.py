@@ -12,7 +12,7 @@ import sys
 
 from mcp_assistant import config
 from mcp_assistant.llm.client import OllamaClient
-from mcp_assistant.llm.prompt_builder import PromptBuilder
+from mcp_assistant.llm.prompt_builder import PromptBuilder, TOOL_CALL_FORMAT_SCHEMA
 from mcp_assistant.llm.response_parser import ParseError, parse_response
 from mcp_assistant.llm.confidence import (
     register_known_tools,
@@ -137,13 +137,14 @@ async def _run_cli_async() -> None:
                     _p = prompt if attempt == 0 else (
                         prompt + "\n\nREMINDER: Respond ONLY with valid JSON."
                     )
-                    raw = llm.generate(_p, system=system)
+                    raw = llm.generate(_p, system=system, format=TOOL_CALL_FORMAT_SCHEMA)
                     parsed = parse_response(raw)
                     break
                 except ParseError:
+                    audit.log_parse_error(user_input, raw, attempt)
                     if attempt == config.MAX_PARSE_RETRIES:
                         print(f"[ERROR] Could not parse LLM response after {config.MAX_PARSE_RETRIES} retries.")
-                        print(f"  Raw: {raw[:200]}")
+                        print(f"  Raw:\n{raw}")
 
             if parsed is None:
                 continue

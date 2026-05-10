@@ -8,11 +8,11 @@ blocked_paths = ["**/.env", "**/*.pem", "**/*.key", "**/id_rsa", "**/.ssh/**", "
 max_file_size_mb = 10
 
 [tools]
-allowed_tools = ["file", "git", "system", "test", "network"]
+allowed_tools = ["file", "git", "system", "test", "network", "shell", "docker", "db", "code", "memory"]
 disabled_tools = []
 
 [confirmations]
-confirm_required = ["file.write", "file.delete", "git.commit", "system.kill_process"]
+confirm_required = ["file.write", "file.delete", "git.commit", "system.kill_process", "shell.run", "db.execute", "docker.stop", "memory.delete"]
 confirm_all_destructive = true
 
 [behavior]

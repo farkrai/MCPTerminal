@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections import deque
 from textual.app import ComposeResult
+from textual.events import Paste
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, Static
@@ -28,6 +29,20 @@ class InputBar(Widget):
             placeholder="Ask me anything in natural language…",
             id="cmd-input",
         )
+
+    def on_paste(self, event: Paste) -> None:
+        """Insert pasted text at the current cursor position in the input field.
+
+        Textual forwards Paste events up the DOM — handling it here ensures
+        paste works regardless of whether the terminal uses bracketed-paste mode.
+        """
+        if self._busy:
+            return
+        event.stop()
+        inp = self.query_one("#cmd-input", Input)
+        pos = inp.cursor_position
+        inp.value = inp.value[:pos] + event.text + inp.value[pos:]
+        inp.cursor_position = pos + len(event.text)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()

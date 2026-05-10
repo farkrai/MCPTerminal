@@ -85,9 +85,36 @@ DIAGNOSTIC_KIT = ToolKit(
     description="Network diagnostic tools",
 )
 
+SHELL_KIT = ToolKit(
+    name="shell",
+    tags={"shell"},
+    description="Safe sandboxed shell command execution",
+)
+DOCKER_KIT = ToolKit(
+    name="docker",
+    tags={"docker"},
+    description="Docker container and image management",
+)
+DATABASE_KIT = ToolKit(
+    name="database",
+    tags={"db"},
+    description="SQLite database inspection and querying",
+)
+CODE_KIT = ToolKit(
+    name="code",
+    tags={"code"},
+    description="Python code quality: symbols, lint, complexity",
+)
+MEMORY_KIT = ToolKit(
+    name="memory",
+    tags={"memory"},
+    description="Persistent key-value memory store across sessions",
+)
+
 ALL_KITS: dict[str, ToolKit] = {
     k.name: k for k in [
         FILE_KIT, GIT_KIT, SYSTEM_KIT, TEST_KIT, NETWORK_KIT,
+        SHELL_KIT, DOCKER_KIT, DATABASE_KIT, CODE_KIT, MEMORY_KIT,
         READ_ONLY_KIT, MONITORING_KIT, DIAGNOSTIC_KIT,
     ]
 }

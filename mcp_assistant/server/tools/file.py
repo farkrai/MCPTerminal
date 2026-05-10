@@ -21,7 +21,7 @@ file_mcp = FastMCP("FileTools")
 
 def _resolve_sandboxed(raw_path: str) -> Path:
     """Resolve *raw_path* against project root and enforce sandbox policy."""
-    path = Path(raw_path)
+    path = Path(raw_path.strip())
     if not path.is_absolute():
         path = config.PROJECT_ROOT / path
     path = path.resolve()
@@ -84,7 +84,7 @@ async def write_file(
     tags={"file", "read-only"},
 )
 async def list_directory(
-    path: Annotated[str, "Directory path to list"],
+    path: Annotated[str, "Directory path to list (default: project root)"] = ".",
     pattern: Annotated[str, "Glob pattern to filter entries (default: all)"] = "*",
     ctx: Context = None,
 ) -> dict:

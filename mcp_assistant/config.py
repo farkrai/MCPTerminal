@@ -11,7 +11,7 @@ MCPRC_FILE = PROJECT_ROOT / ".mcprc"
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
 OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "deepseek-r1:8b")
+OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
 OLLAMA_TIMEOUT: int = int(os.environ.get("OLLAMA_TIMEOUT", "300"))
 
 # Temperature for structured tool-call generation (low = deterministic)
@@ -23,6 +23,9 @@ OLLAMA_TEMP_NL: float = 0.7
 CONFIDENCE_THRESHOLD: float = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.5"))
 CONTEXT_WINDOW_SIZE: int = int(os.environ.get("CONTEXT_WINDOW_SIZE", "10"))
 MAX_PARSE_RETRIES: int = 2
+
+
+MEMORY_DB_PATH: Path = CONTEXT_PERSIST_DIR / "memory.db"
 
 
 def ensure_dirs() -> None:

@@ -25,10 +25,15 @@ from fastmcp.server.transforms import PromptsAsTools, ResourcesAsTools
 from mcp_assistant.server.middleware import AuditMiddleware, PolicyMiddleware, TimingMiddleware
 from mcp_assistant.server.prompts import register_prompts
 from mcp_assistant.server.resources import register_resources
+from mcp_assistant.server.tools.code import code_mcp
+from mcp_assistant.server.tools.database import db_mcp
+from mcp_assistant.server.tools.docker import docker_mcp
 from mcp_assistant.server.tools.file import file_mcp
 from mcp_assistant.server.tools.git import git_mcp
+from mcp_assistant.server.tools.memory import memory_mcp
 from mcp_assistant.server.tools.meta import meta_mcp
 from mcp_assistant.server.tools.network import network_mcp
+from mcp_assistant.server.tools.shell import shell_mcp
 from mcp_assistant.server.tools.system import system_mcp
 from mcp_assistant.server.tools.test import test_mcp
 
@@ -36,7 +41,7 @@ from mcp_assistant.server.tools.test import test_mcp
 def create_server() -> FastMCP:
     """Build and return a fully-wired FastMCP server instance.
 
-    Tool inventory (29 total after transforms):
+    Tool inventory (54 total after transforms):
     ─────────────────────────────────────────────────────────────────────
     Namespace "file"    → file_read, file_write, file_list,
                           file_search, file_delete                  (5)
@@ -50,6 +55,14 @@ def create_server() -> FastMCP:
                           test_explain_failures                     (4)
     Namespace "network" → network_ping, network_dns_lookup,
                           network_http_probe, network_port_check    (4)
+    Namespace "shell"   → shell_run, shell_which, shell_env         (3)
+    Namespace "docker"  → docker_ps, docker_logs, docker_inspect,
+                          docker_images, docker_start, docker_stop  (6)
+    Namespace "db"      → db_tables, db_schema, db_query,
+                          db_execute                                (4)
+    Namespace "code"    → code_symbols, code_lint, code_complexity  (3)
+    Namespace "memory"  → memory_set, memory_get, memory_list,
+                          memory_delete, memory_search              (5)
     Meta (no namespace) → describe_tools, toolkit_status,
                           toolkit_activate                          (3)
     PromptsAsTools      → prompt_system-instructions,
@@ -59,7 +72,7 @@ def create_server() -> FastMCP:
     ResourcesAsTools    → resource_config, resource_audit-today,
                           resource_audit-verify, resource_session   (4)
     ─────────────────────────────────────────────────────────────────────
-    Total: 37 tools visible to the LLM
+    Total: 58 tools visible to the LLM
     """
     mcp = FastMCP(
         name="MCP Terminal Assistant",
@@ -84,6 +97,11 @@ def create_server() -> FastMCP:
     mcp.mount(system_mcp,  namespace="system")
     mcp.mount(test_mcp,    namespace="test")
     mcp.mount(network_mcp, namespace="network")
+    mcp.mount(shell_mcp,   namespace="shell")
+    mcp.mount(docker_mcp,  namespace="docker")
+    mcp.mount(db_mcp,      namespace="db")
+    mcp.mount(code_mcp,    namespace="code")
+    mcp.mount(memory_mcp,  namespace="memory")
 
     # ── Meta-tools (no namespace — describe_tools, toolkit_status/activate) ───
     mcp.mount(meta_mcp)

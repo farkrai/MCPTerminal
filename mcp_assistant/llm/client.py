@@ -24,8 +24,18 @@ class OllamaClient:
         prompt: str,
         system: str | None = None,
         temperature: float = config.OLLAMA_TEMP_STRUCTURED,
+        format: dict | str | None = None,
     ) -> str:
+        """Generate a completion.
+
+        Pass ``format`` as a JSON-schema dict to enforce structured output via
+        Ollama's built-in GGML grammar enforcement (Ollama ≥ 0.5). This helps
+        smaller models stay on-spec for tool-call JSON without extra retries.
+        Pass ``format="json"`` for generic JSON mode.
+        """
         payload = self._build_payload(prompt, system, temperature, stream=False)
+        if format is not None:
+            payload["format"] = format
         resp = self._session.post(
             f"{self.base_url}/api/generate",
             json=payload,

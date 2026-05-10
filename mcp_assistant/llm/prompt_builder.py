@@ -8,6 +8,8 @@ The system prompt tells the LLM:
 from __future__ import annotations
 import json
 
+from mcp_assistant import config
+
 _SYSTEM_TEMPLATE = """\
 You are an offline AI terminal assistant powered by the Model Context Protocol (MCP).
 You control a local machine via structured tool calls — no cloud, no external services.
@@ -30,7 +32,7 @@ Rules:
 - "params" must contain only the parameters shown for that tool (omit optional ones if unused).
 - "confidence": your certainty from 0.0 to 1.0.
 - If the request cannot be mapped: {{"tool": "unknown", "params": {{}}, "confidence": 0.2}}
-- File paths: relative paths are resolved from the project root.
+- File paths: the project root (and current working directory) is {project_root}. For "current directory" requests use path="." or omit path entirely. Never construct absolute paths — use relative paths only.
 - Dry-run mode: pass "dry_run": true for destructive operations when previewing.
 
 ━━━ AVAILABLE TOOLS ━━━
@@ -40,7 +42,7 @@ Rules:
 _DEFAULT_TOOL_SUMMARY = """\
 file_read(path)                              — Read file contents
 file_write(path, content, dry_run=false)     — Write to a file [DESTRUCTIVE]
-file_list(path, pattern="*")                 — List directory contents
+file_list(path=".", pattern="*")             — List directory contents (path defaults to project root)
 file_search(path, pattern)                   — Recursive glob search
 file_delete(path, dry_run=false)             — Delete a file [DESTRUCTIVE]
 
@@ -67,7 +69,33 @@ test_explain_failures(output)                — LLM explanation of failures
 network_ping(host, count=4)                  — ICMP ping
 network_dns_lookup(host)                     — DNS resolution
 network_http_probe(url, method="GET")        — HTTP status probe
-network_port_check(host, port)               — TCP port check\
+network_port_check(host, port)               — TCP port check
+
+shell_run(command, cwd=null, timeout=30, dry_run=false) — Run a shell command [DESTRUCTIVE]
+shell_which(name)                            — Check if a program is installed
+shell_env(key=null)                          — Read environment variables
+
+docker_ps(all_containers=false)              — List Docker containers
+docker_logs(container, lines=50)             — Container logs
+docker_inspect(container)                    — Container metadata (ports, mounts, env)
+docker_images()                              — List local Docker images
+docker_start(container, dry_run=false)       — Start a stopped container
+docker_stop(container, dry_run=false)        — Stop a running container [DESTRUCTIVE]
+
+db_tables(path)                              — List tables in a SQLite database
+db_schema(path, table)                       — Column definitions for a table
+db_query(path, sql, params=null, limit=100)  — Run a SELECT query (read-only)
+db_execute(path, sql, params=null, dry_run=false) — Run INSERT/UPDATE/DELETE [DESTRUCTIVE]
+
+code_symbols(path)                           — Extract classes & functions from a .py file
+code_lint(path, fix=false)                   — Lint Python with ruff (or py_compile fallback)
+code_complexity(path)                        — Cyclomatic complexity per function
+
+memory_set(key, value, tags=null)            — Store a persistent memory entry
+memory_get(key)                              — Retrieve a memory by key
+memory_list(tag=null, limit=50)             — List stored memories (optionally by tag)
+memory_delete(key)                           — Delete a memory [DESTRUCTIVE]
+memory_search(query, limit=20)              — Search memories by text\
 """
 
 
@@ -97,6 +125,34 @@ def _schema_to_summary(tools: list) -> str:
     return "\n".join(lines)
 
 
+# JSON schema passed to Ollama's `format` parameter to enforce structured output.
+# Covers both single-call and chain shapes. Ollama ≥ 0.5 enforces this via GGML
+# grammar, eliminating most parse failures on smaller models.
+TOOL_CALL_FORMAT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "tool":        {"type": "string"},
+        "params":      {"type": "object"},
+        "confidence":  {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "chain":       {"type": "boolean"},
+        "description": {"type": "string"},
+        "steps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "tool":       {"type": "string"},
+                    "params":     {"type": "object"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["tool", "params"],
+            },
+        },
+        "continue_on_error": {"type": "boolean"},
+    },
+}
+
+
 class PromptBuilder:
     def __init__(self, tool_summary: str = _DEFAULT_TOOL_SUMMARY) -> None:
         self._tool_summary = tool_summary
@@ -120,7 +176,10 @@ class PromptBuilder:
         self._tool_summary = summary
 
     def system_prompt(self) -> str:
-        return _SYSTEM_TEMPLATE.format(tool_summary=self._tool_summary)
+        return _SYSTEM_TEMPLATE.format(
+            tool_summary=self._tool_summary,
+            project_root=config.PROJECT_ROOT,
+        )
 
     def user_prompt(
         self,
@@ -154,14 +213,23 @@ class PromptBuilder:
     ) -> str:
         """Prompt for turning a single raw tool output into a human-readable answer."""
         truncated = raw_output[:3000] + ("…" if len(raw_output) > 3000 else "")
+        _PATH_TOOLS = {"file_read", "file_write", "file_list", "file_search", "file_delete",
+                       "git_status", "git_diff", "git_log", "git_add", "git_commit",
+                       "git_branch_list", "git_branch_switch"}
+        path_ctx = (
+            f"Context: the project root is {config.PROJECT_ROOT} — copy this path exactly if you mention it.\n\n"
+            if tool_name in _PATH_TOOLS else ""
+        )
         return (
-            f'The user asked: "{user_request}"\n\n'
-            f"The tool `{tool_name}` returned this data:\n"
+            f'The user requested: "{user_request}"\n\n'
+            f"{path_ctx}"
+            f"The tool `{tool_name}` already ran and returned this output:\n"
             f"{truncated}\n\n"
-            "Respond to the user in 1–4 sentences of plain, natural English. "
-            "Answer their question directly using the data above. "
-            "Do not output JSON, code blocks, or raw numbers unless quoting a key value. "
-            "If the output is an error, explain what went wrong and suggest a fix."
+            "Report what was done in 1-2 sentences of plain past-tense English. "
+            "Do NOT give instructions or explain how to do it — the action already happened. "
+            "Summarise the result factually. "
+            "Do not output JSON, code blocks, or tool names. "
+            "If the output is an error, explain what went wrong in plain English."
         )
 
     def summarize_chain_prompt(

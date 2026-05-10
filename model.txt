@@ -1,0 +1,60 @@
+                                                          
+❯ currently im using deepseekr1:8b it takes a lot of time to respond... i need faster which model is better at handling these tools and can run on my laptop... 16gb ram and 4gb graphics rtx 3050ti                                          
+                                                                                                                                                                                                     
+  Searched for 1 pattern (ctrl+o to expand)                                                                                                                                                                                                   
+                                                            
+● The core problem isn't just the model size — deepseek-r1 is a reasoning model. Before it outputs your tool-call JSON it generates a hidden <think>...</think> chain-of-thought block that can be hundreds of tokens long. Your code strips  
+  those tags after the fact, but you're still paying the full generation cost for them. For tool-calling, you need fast JSON, not reasoning.
+                                                                                                                                                                                                                                              
+  ---                                                                                                                                                                                                                                         
+  Hardware reality for RTX 3050 Ti 4GB VRAM                                                                                                                                                                                                   
+                                                                                                                                                                                                                                              
+  ┌──────────────────────────┬─────────────┬────────────────────┬──────────────┬────────────────┐
+  │          Model           │ VRAM needed │    Fits on GPU?    │ Approx tok/s │ Good for JSON? │                                                                                                                                             
+  ├──────────────────────────┼─────────────┼────────────────────┼──────────────┼────────────────┤
+  │ deepseek-r1:8b (current) │ ~5GB Q4     │ No — spills to RAM │ 3–6 tok/s    │ Overkill, slow │                                                                                                                                             
+  ├──────────────────────────┼─────────────┼────────────────────┼──────────────┼────────────────┤
+  │ qwen2.5:7b Q4_K_M        │ ~4.7GB      │ Barely / partial   │ 8–12 tok/s   │ Excellent      │                                                                                                                                             
+  ├──────────────────────────┼─────────────┼────────────────────┼──────────────┼────────────────┤                                                                                                                                             
+  │ qwen2.5:3b               │ ~2GB        │ Yes, fully         │ 25–35 tok/s  │ Excellent      │                                                                                                                                             
+  ├──────────────────────────┼─────────────┼────────────────────┼──────────────┼────────────────┤                                                                                                                                             
+  │ phi3.5:3.8b              │ ~2.3GB      │ Yes, fully         │ 22–30 tok/s  │ Good           │
+  ├──────────────────────────┼─────────────┼────────────────────┼──────────────┼────────────────┤                                                                                                                                             
+  │ llama3.2:3b              │ ~2GB        │ Yes, fully         │ 22–28 tok/s  │ Decent         │
+  └──────────────────────────┴─────────────┴────────────────────┴──────────────┴────────────────┘                                                                                                                                             
+                                                            
+  Recommendation: qwen2.5:3b                                                                                                                                                                                                                  
+   
+  Qwen2.5 is specifically trained for structured output and function calling. At 3B it fits entirely in your 4GB VRAM with room to spare — full GPU inference instead of the slow CPU-spillover you're getting now. You'll go from ~30s waits 
+  to ~3–5s responses.                                       
+                                                                                                                                                                                                                                              
+  ---                                                       
+  How to switch
+
+  ollama pull qwen2.5:3b
+                                                                                                                                                                                                                                              
+  Then either set the env variable per-session:
+  OLLAMA_MODEL=qwen2.5:3b mcp                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                              
+  Or update the default in config.py permanently:
+                                                                                                                                                                                                                                              
+  OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
+                                                                                                                                                                                                                                              
+  ---
+  If 3B quality isn't enough                                                                                                                                                                                                                  
+                                                            
+  If you find qwen2.5:3b misses tool names or gets params wrong, try partial GPU offload of the 7B:
+                                                                                                                                                                                                                                              
+  ollama pull qwen2.5:7b
+  OLLAMA_NUM_GPU=28 OLLAMA_MODEL=qwen2.5:7b mcp                                                                                                                                                                                               
+                                                            
+  OLLAMA_NUM_GPU=28 puts 28 of the 32 layers on your GPU, the rest on RAM — gives you ~10–12 tok/s, about 2–3x faster than deepseek-r1 is giving you now, with better JSON accuracy.                                                          
+                                                            
+  ---                                                                                                                                                                                                                                         
+  Why qwen2.5 specifically                                  
+                          
+  It's trained with a structured output emphasis — Alibaba fine-tuned it on function-calling datasets. Your format JSON schema enforcement (the TOOL_CALL_FORMAT_SCHEMA we added to OllamaClient) will also work better with it since it
+  cooperates with grammar constraints rather than fighting them like general-purpose models do.                                                                                                                                               
+   
+✻ Cooked for 42s                                                                                                                                                                                                                              
+                                                    
