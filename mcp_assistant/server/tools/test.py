@@ -13,7 +13,7 @@ from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from mcp_assistant import config
+from mcp_assistant.server.state import policy
 
 test_mcp = FastMCP("TestTools")
 
@@ -33,8 +33,8 @@ _PYTEST_EXIT = {
 def _resolve_cwd(cwd: str | None) -> Path:
     if cwd:
         p = Path(cwd)
-        return p if p.is_absolute() else config.PROJECT_ROOT / p
-    return config.PROJECT_ROOT
+        return p if p.is_absolute() else policy.sandbox_root / p
+    return policy.sandbox_root
 
 
 def _run_pytest(cwd: Path, extra_args: list[str] | None = None) -> dict:
@@ -137,7 +137,7 @@ async def run_file(
     """Run a specific test file with pytest."""
     test_path = Path(path)
     if not test_path.is_absolute():
-        test_path = config.PROJECT_ROOT / test_path
+        test_path = policy.sandbox_root / test_path
     if not test_path.exists():
         raise ToolError(f"Test file not found: {test_path}")
     if ctx:

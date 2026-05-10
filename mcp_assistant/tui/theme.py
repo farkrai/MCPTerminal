@@ -267,6 +267,40 @@ InputBar .badge-busy {
     background: #1a0015;
 }
 
+/* ── Confirm bar ─────────────────────────────────────────────────────────── */
+ConfirmBar {
+    height: 5;
+    background: #1a1000;
+    border: round #ffab00;
+    layout: horizontal;
+    align: center middle;
+    padding: 0 2;
+}
+
+ConfirmBar.hidden {
+    display: none;
+}
+
+#confirm-label {
+    width: 1fr;
+    color: #ffab00;
+    text-style: bold;
+    content-align: left middle;
+}
+
+#confirm-buttons {
+    width: auto;
+    height: 3;
+    layout: horizontal;
+    align: right middle;
+}
+
+ConfirmBar Button {
+    width: 14;
+    height: 3;
+    margin: 0 0 0 2;
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    RIGHT SIDEBAR — Tool inspector with animated headers
    ══════════════════════════════════════════════════════════════════════════ */

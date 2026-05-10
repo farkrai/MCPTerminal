@@ -20,7 +20,7 @@ from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from mcp_assistant import config
+from mcp_assistant.server.state import policy
 
 code_mcp = FastMCP("CodeTools")
 
@@ -28,7 +28,7 @@ code_mcp = FastMCP("CodeTools")
 def _resolve(path: str) -> Path:
     p = Path(path)
     if not p.is_absolute():
-        p = config.PROJECT_ROOT / p
+        p = policy.sandbox_root / p
     return p.resolve()
 
 

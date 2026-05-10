@@ -54,7 +54,7 @@ async def _summarize(llm, builder, user_text: str, tool_name: str, raw_output: s
         return None
     prompt = builder.summarize_result_prompt(user_text, tool_name, raw_output)
     try:
-        return await asyncio.to_thread(lambda: llm.generate(prompt, temperature=0.3))
+        return await asyncio.to_thread(lambda: llm.generate(prompt, temperature=0.5))
     except Exception:
         return None
 
@@ -204,6 +204,13 @@ async def _run_cli_async() -> None:
                 step_results: list[tuple[str, str]] = []
                 for i, step in enumerate(parsed.steps, 1):
                     params = _resolve_chain_templates(step.params, prior_outputs)
+                    if not _confirm_if_required(step.tool):
+                        print(f"  Step {i}: {step.tool} SKIPPED")
+                        prior_outputs.append("")
+                        step_results.append((step.tool, "skipped by user"))
+                        if not parsed.continue_on_error:
+                            break
+                        continue
                     print(f"  Step {i}: {step.tool} ", end="", flush=True)
                     try:
                         out = await _call_tool(client, step.tool, params)
@@ -225,6 +232,9 @@ async def _run_cli_async() -> None:
                         print(f"\n  [{tool_n}] {raw[:300]}")
                 output_for_ctx = summary or " | ".join(o[:100] for o in prior_outputs)
             else:
+                if not _confirm_if_required(parsed.tool):
+                    print("  Skipped.")
+                    continue
                 try:
                     out = await _call_tool(client, parsed.tool, parsed.params)
                     summary = await _summarize(llm, builder, user_input, parsed.tool, out)
@@ -266,6 +276,18 @@ def _resolve_chain_templates(params: dict, prior: list[str]) -> dict:
     return result
 
 
+def _confirm_if_required(tool_name: str) -> bool:
+    """Return True if the tool may proceed (either no confirmation needed or user said yes)."""
+    namespace, _, action = tool_name.partition("_")
+    if not policy.requires_confirmation(namespace, action):
+        return True
+    answer = input(f"[CONFIRM] {tool_name} — proceed? (y/n) > ").strip().lower()
+    if answer not in {"y", "yes"}:
+        print("  Cancelled.")
+        return False
+    return True
+
+
 def _handle_special(cmd: str, client, buffer: ConversationBuffer, guard: "HallucinationGuard | None" = None) -> None:
     parts = cmd[1:].strip().split()
     name = parts[0].lower() if parts else ""
@@ -273,6 +295,7 @@ def _handle_special(cmd: str, client, buffer: ConversationBuffer, guard: "Halluc
     if name == "help":
         print(
             "Special commands:\n"
+            "  !sandbox <path>        — set the sandbox working directory\n"
             "  !dry-run on|off        — toggle dry-run mode\n"
             "  !context               — show conversation history\n"
             "  !context clear         — clear conversation history\n"
@@ -385,6 +408,21 @@ def _handle_special(cmd: str, client, buffer: ConversationBuffer, guard: "Halluc
             print(h_info)
         if slow_info:
             print(slow_info)
+
+    elif name == "sandbox":
+        from pathlib import Path as _Path
+        raw_path = " ".join(parts[1:]).strip().strip('"').strip("'")
+        if not raw_path:
+            print(f"[sandbox] Current: {policy.sandbox_root}")
+            print("  Usage: !sandbox /path/to/your/project")
+        else:
+            new_root = _Path(raw_path).expanduser().resolve()
+            if not new_root.is_dir():
+                print(f"[sandbox] Directory not found: {new_root}")
+            else:
+                config.write_default_mcprc(new_root)
+                policy.reload(config.MCPRC_FILE)
+                print(f"[sandbox] Sandbox set to: {new_root}")
 
     else:
         print(f"Unknown: !{name}  (try !help)")

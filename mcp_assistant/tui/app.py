@@ -30,6 +30,18 @@ from mcp_assistant.tui.widgets.tool_inspector import ToolInspector
 from mcp_assistant.tui.widgets.input_bar import InputBar
 from mcp_assistant.tui.widgets.command_palette import CommandPalette
 from mcp_assistant.tui.widgets.welcome_screen import WelcomeScreen
+from mcp_assistant.tui.widgets.confirm_bar import ConfirmBar
+
+
+def _tools_requiring_confirmation(parsed: ToolCall | ToolChain) -> list[str]:
+    """Return tool names in parsed that require policy confirmation."""
+    def _needs(tool_name: str) -> bool:
+        ns, _, action = tool_name.partition("_")
+        return policy.requires_confirmation(ns, action)
+
+    if isinstance(parsed, ToolCall):
+        return [parsed.tool] if _needs(parsed.tool) else []
+    return [s.tool for s in parsed.steps if _needs(s.tool)]
 
 
 def _extract_tool_output(raw) -> str:
@@ -84,6 +96,7 @@ class MCPAssistantApp(App):
         self._system_prompt = self._builder.system_prompt()
 
         self._available_tools: list = []
+        self._tool_descriptions: dict[str, str] = {}
         self._fastmcp_client = None
         self._guard: HallucinationGuard | None = None
 
@@ -113,6 +126,7 @@ class MCPAssistantApp(App):
             with Vertical(id="thinking-bar", classes="hidden"):
                 yield LoadingIndicator()
                 yield Static("Thinking…", id="thinking-label")
+            yield ConfirmBar(classes="hidden")
             yield InputBar(dry_run=policy.dry_run_mode)
         yield ToolInspector()
         yield Footer()
@@ -130,6 +144,10 @@ class MCPAssistantApp(App):
 
         self._available_tools = await self._fastmcp_client.list_tools()
         tool_names = {t.name for t in self._available_tools}
+        self._tool_descriptions: dict[str, str] = {
+            t.name: (t.description or "").splitlines()[0]
+            for t in self._available_tools
+        }
 
         register_known_tools(tool_names)
         self._builder.update_from_fastmcp_tools(self._available_tools)
@@ -219,12 +237,22 @@ class MCPAssistantApp(App):
 
         prompt = self._builder.user_prompt(text, self._buffer.get_context())
 
+        # Hint the model to use chain format when the request clearly asks for multiple steps
+        _CHAIN_KEYWORDS = ("then", "after that", "first", "followed by", "and also",
+                           "next", "and then", "afterwards", "step by step")
+        if any(kw in text.lower() for kw in _CHAIN_KEYWORDS):
+            prompt += (
+                "\n\nIMPORTANT: This request has multiple steps. "
+                "You MUST respond with the chain format: "
+                "{\"chain\": true, \"description\": \"...\", \"steps\": [...]}"
+            )
+
         parsed = None
         for attempt in range(config.MAX_PARSE_RETRIES + 1):
             try:
                 p = prompt if attempt == 0 else prompt + "\n\nREMINDER: Respond ONLY with valid JSON."
                 raw = await asyncio.to_thread(
-                    lambda p=p: self._llm.generate(p, system=self._system_prompt)
+                    lambda p=p: self._llm.generate(p, system=self._system_prompt, format="json")
                 )
                 parsed = parse_response(raw)
                 break
@@ -279,6 +307,16 @@ class MCPAssistantApp(App):
             self._show_thinking(False)
             return
 
+        # Policy confirmation gate — skipped in dry-run mode (nothing destructive runs)
+        tools_needing_confirm = _tools_requiring_confirmation(parsed)
+        if tools_needing_confirm and not policy.dry_run_mode:
+            names = ", ".join(tools_needing_confirm)
+            self._pending_call = parsed
+            self._pending_user_text = text
+            self._show_thinking(False)
+            self.query_one(ConfirmBar).show(f"Confirm: {names}?")
+            return
+
         await self._dispatch_parsed(parsed, text)
         input_bar.set_busy(False)
         self._show_thinking(False)
@@ -295,8 +333,21 @@ class MCPAssistantApp(App):
             self._show_thinking(True)
             self.run_worker(self._dispatch_and_cleanup(pending, user_text), exclusive=True)
         else:
-            self.query_one(HistoryPanel).add_system("Skipped. Please rephrase.")
+            self.query_one(HistoryPanel).add_system("Skipped. Please rephrase if needed.")
             self.query_one(ToolInspector).show_idle()
+
+    async def on_confirm_bar_confirmed(self, event: ConfirmBar.Confirmed) -> None:
+        parsed = self._pending_call
+        text = self._pending_user_text
+        self._pending_call = None
+        self._pending_user_text = ""
+        if event.accepted and parsed is not None:
+            self._show_thinking(True)
+            await self._dispatch_parsed(parsed, text)
+            self._show_thinking(False)
+        else:
+            self.query_one(HistoryPanel).add_system("Cancelled.")
+        self.query_one(InputBar).set_busy(False)
 
     async def _dispatch_and_cleanup(self, parsed: ToolCall | ToolChain, user_text: str) -> None:
         await self._dispatch_parsed(parsed, user_text)
@@ -325,7 +376,8 @@ class MCPAssistantApp(App):
             history.add_tool_call(parsed.tool, parsed.confidence)
             result = await self._call_tool(parsed.tool, parsed.params, parsed.confidence)
             if result.success:
-                result.summary = await self._summarize(user_text, result.tool, result.output)
+                tool_desc = self._tool_descriptions.get(result.tool, "")
+                result.summary = await self._summarize(user_text, result.tool, result.output, tool_desc)
             history.add_result(result.summary or result.output, result.success)
             inspector.show_call(result)
             ctx_output = result.summary or result.output[:200]
@@ -366,18 +418,16 @@ class MCPAssistantApp(App):
                 break
         return results
 
-    async def _summarize(self, user_text: str, tool_name: str, raw_output: str) -> str | None:
-        """Ask the LLM to turn raw tool output into a human-readable answer.
-
-        Returns None if the LLM is unavailable or the call fails, so the caller
-        can fall back to showing the raw output.
-        """
+    async def _summarize(
+        self, user_text: str, tool_name: str, raw_output: str, tool_desc: str = ""
+    ) -> str | None:
+        """Ask the LLM to answer the user's question using the raw tool output."""
         if not self._llm.is_available():
             return None
-        prompt = self._builder.summarize_result_prompt(user_text, tool_name, raw_output)
+        prompt = self._builder.summarize_result_prompt(user_text, tool_name, raw_output, tool_desc)
         try:
             return await asyncio.to_thread(
-                lambda: self._llm.generate(prompt, temperature=0.3)
+                lambda: self._llm.generate(prompt, temperature=0.5)
             )
         except Exception:
             return None
@@ -416,6 +466,7 @@ class MCPAssistantApp(App):
         if name == "help":
             history.add_system(
                 "╔══ Commands ══════════════════════════╗\n"
+                "║  !sandbox <path>   Set sandbox dir    ║\n"
                 "║  !dry-run on|off   Toggle dry-run    ║\n"
                 "║  !context          Show context       ║\n"
                 "║  !context clear    Clear context      ║\n"
@@ -529,6 +580,25 @@ class MCPAssistantApp(App):
             for tool in sorted(domain_tools, key=lambda t: t.name):
                 desc = (tool.description or "").splitlines()[0][:55]
                 history.add_system(f"  {tool.name:<32} {desc}")
+
+        elif name == "sandbox":
+            raw_path = " ".join(parts[1:]).strip().strip('"').strip("'")
+            if not raw_path:
+                history.add_system(
+                    f"Current sandbox: {policy.sandbox_root}\n"
+                    "Usage: !sandbox /path/to/your/project"
+                )
+            else:
+                from pathlib import Path as _Path
+                new_root = _Path(raw_path).expanduser().resolve()
+                if not new_root.is_dir():
+                    history.add_error(f"Directory not found: {new_root}")
+                else:
+                    config.write_default_mcprc(new_root)
+                    policy.reload(config.MCPRC_FILE)
+                    self._system_prompt = self._builder.system_prompt()
+                    self._show_toast(f"Sandbox → {new_root}", "success", 4.0)
+                    history.add_system(f"Sandbox set to: {new_root}")
 
         elif name == "clear":
             history.clear_log()

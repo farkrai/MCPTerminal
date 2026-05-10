@@ -2,7 +2,7 @@
 
 Mounted under namespace "git" → tool names become:
   git_status, git_diff, git_log, git_add, git_commit,
-  git_branch_list, git_branch_switch
+  git_branch_list, git_branch_switch, git_push
 """
 from __future__ import annotations
 import subprocess
@@ -13,7 +13,6 @@ from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from mcp_assistant import config
 from mcp_assistant.server.state import policy
 
 git_mcp = FastMCP("GitTools")
@@ -24,8 +23,8 @@ git_mcp = FastMCP("GitTools")
 def _cwd(cwd: str | None) -> Path:
     if cwd:
         p = Path(cwd)
-        return p if p.is_absolute() else config.PROJECT_ROOT / p
-    return config.PROJECT_ROOT
+        return p if p.is_absolute() else policy.sandbox_root / p
+    return policy.sandbox_root
 
 
 def _run(cmd: list[str], cwd: Path) -> str:
@@ -109,6 +108,28 @@ async def commit(
     if ctx:
         await ctx.info(f"Committing: {message}")
     return _run(["git", "commit", "-m", message], work_dir)
+
+
+@git_mcp.tool(
+    name="push",
+    annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False),
+    tags={"git", "destructive"},
+)
+async def push(
+    remote: Annotated[str, "Remote name (default: origin)"] = "origin",
+    branch: Annotated[str | None, "Branch to push (default: current branch)"] = None,
+    dry_run: Annotated[bool, "Preview without pushing"] = False,
+    cwd: Annotated[str | None, "Working directory (default: project root)"] = None,
+    ctx: Context = None,
+) -> str:
+    """Push commits to a remote git repository."""
+    if policy.dry_run_mode or dry_run:
+        target = f"{remote}/{branch}" if branch else remote
+        return f"[DRY RUN] Would push to: {target}"
+    if ctx:
+        await ctx.info(f"Pushing to {remote}" + (f"/{branch}" if branch else ""))
+    cmd = ["git", "push", remote] + ([branch] if branch else [])
+    return _run(cmd, _cwd(cwd))
 
 
 @git_mcp.tool(

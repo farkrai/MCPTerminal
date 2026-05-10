@@ -31,3 +31,36 @@ MEMORY_DB_PATH: Path = CONTEXT_PERSIST_DIR / "memory.db"
 def ensure_dirs() -> None:
     AUDIT_LOG_DIR.mkdir(parents=True, exist_ok=True)
     CONTEXT_PERSIST_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def write_default_mcprc(sandbox: Path) -> None:
+    """Write a fresh .mcprc with the given sandbox_root."""
+    MCPRC_FILE.write_text(
+        f'[meta]\n'
+        f'schema_version = "1.0"\n'
+        f'project_name = "MCP Terminal Assistant"\n'
+        f'\n'
+        f'[security]\n'
+        f'sandbox_root = "{sandbox}"\n'
+        f'blocked_paths = ["**/.env", "**/*.pem", "**/*.key", "**/id_rsa", "**/.ssh/**", "**/secrets/**"]\n'
+        f'max_file_size_mb = 10\n'
+        f'\n'
+        f'[tools]\n'
+        f'allowed_tools = ["file", "git", "system", "test", "network", "shell", "docker", "db", "code", "memory"]\n'
+        f'disabled_tools = []\n'
+        f'\n'
+        f'[confirmations]\n'
+        f'confirm_required = ["file.write", "file.delete", "git.commit", "git.push", "system.kill_process", "shell.run", "db.execute", "docker.stop", "memory.delete"]\n'
+        f'confirm_all_destructive = true\n'
+        f'\n'
+        f'[behavior]\n'
+        f'dry_run_mode = false\n'
+        f'confidence_threshold = 0.5\n'
+        f'context_window_size = 10\n'
+        f'chain_continue_on_error = false\n'
+        f'\n'
+        f'[audit]\n'
+        f'log_dir = "audit_logs"\n'
+        f'retention_days = 30\n',
+        encoding="utf-8",
+    )

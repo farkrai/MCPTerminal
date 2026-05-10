@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from mcp_assistant import config
+from mcp_assistant.server.state import policy as _policy
 
 _SYSTEM_TEMPLATE = """\
 You are an offline AI terminal assistant powered by the Model Context Protocol (MCP).
@@ -53,6 +54,7 @@ git_add(path=".", cwd=null)                  — Stage files
 git_commit(message, cwd=null, dry_run=false) — Commit staged changes [DESTRUCTIVE]
 git_branch_list(cwd=null)                    — List all branches
 git_branch_switch(branch, dry_run=false)     — Switch branch [DESTRUCTIVE]
+git_push(remote="origin", branch=null, dry_run=false) — Push commits to remote [DESTRUCTIVE]
 
 system_cpu_stats()                           — CPU usage & core count
 system_ram_stats()                           — RAM & swap usage
@@ -178,7 +180,7 @@ class PromptBuilder:
     def system_prompt(self) -> str:
         return _SYSTEM_TEMPLATE.format(
             tool_summary=self._tool_summary,
-            project_root=config.PROJECT_ROOT,
+            project_root=_policy.sandbox_root,
         )
 
     def user_prompt(
@@ -210,26 +212,21 @@ class PromptBuilder:
         user_request: str,
         tool_name: str,
         raw_output: str,
+        tool_description: str = "",
     ) -> str:
-        """Prompt for turning a single raw tool output into a human-readable answer."""
+        """Prompt for answering the user's question using the tool output."""
         truncated = raw_output[:3000] + ("…" if len(raw_output) > 3000 else "")
-        _PATH_TOOLS = {"file_read", "file_write", "file_list", "file_search", "file_delete",
-                       "git_status", "git_diff", "git_log", "git_add", "git_commit",
-                       "git_branch_list", "git_branch_switch"}
-        path_ctx = (
-            f"Context: the project root is {config.PROJECT_ROOT} — copy this path exactly if you mention it.\n\n"
-            if tool_name in _PATH_TOOLS else ""
-        )
+        tool_ctx = f"Tool purpose: {tool_description}\n" if tool_description else ""
         return (
-            f'The user requested: "{user_request}"\n\n'
-            f"{path_ctx}"
-            f"The tool `{tool_name}` already ran and returned this output:\n"
+            f'The user asked: "{user_request}"\n\n'
+            f"{tool_ctx}"
+            f"The system ran `{tool_name}` and got this result:\n"
             f"{truncated}\n\n"
-            "Report what was done in 1-2 sentences of plain past-tense English. "
-            "Do NOT give instructions or explain how to do it — the action already happened. "
-            "Summarise the result factually. "
-            "Do not output JSON, code blocks, or tool names. "
-            "If the output is an error, explain what went wrong in plain English."
+            "Using this result, directly answer the user's question in 2-4 natural sentences. "
+            "Be specific — reference exact filenames, numbers, values, or status from the output. "
+            "Do not just describe what the tool did; actually answer what the user wanted to know. "
+            "Do not output JSON, raw data dumps, or code blocks. "
+            "If the output is an error, explain clearly what went wrong and why."
         )
 
     def summarize_chain_prompt(

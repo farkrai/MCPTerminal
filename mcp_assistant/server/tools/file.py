@@ -20,10 +20,10 @@ file_mcp = FastMCP("FileTools")
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _resolve_sandboxed(raw_path: str) -> Path:
-    """Resolve *raw_path* against project root and enforce sandbox policy."""
+    """Resolve *raw_path* against the sandbox root and enforce policy."""
     path = Path(raw_path.strip())
     if not path.is_absolute():
-        path = config.PROJECT_ROOT / path
+        path = policy.sandbox_root / path
     path = path.resolve()
     if not policy.is_path_allowed(path):
         raise ToolError(f"Path not allowed by policy: {path}")

@@ -19,7 +19,6 @@ from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from mcp_assistant import config
 from mcp_assistant.server.state import policy
 
 db_mcp = FastMCP("DatabaseTools")
@@ -30,7 +29,7 @@ _ALLOWED_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 def _resolve_db(path: str) -> Path:
     p = Path(path)
     if not p.is_absolute():
-        p = config.PROJECT_ROOT / p
+        p = policy.sandbox_root / p
     p = p.resolve()
     if p.suffix not in _ALLOWED_EXTENSIONS:
         raise ToolError(

@@ -21,7 +21,6 @@ from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from mcp_assistant import config
 from mcp_assistant.server.state import policy
 
 shell_mcp = FastMCP("ShellTools")
@@ -68,13 +67,13 @@ async def run(
     Blocked: rm -rf /, fork bombs, disk wipes, pipe-to-shell, shutdown commands.
     """
     if policy.dry_run_mode or dry_run:
-        return {"dry_run": True, "command": command, "cwd": cwd or str(config.PROJECT_ROOT)}
+        return f"[DRY RUN] Would run: {command}\nDirectory: {cwd or policy.sandbox_root}"
 
     reason = _is_blocked(command)
     if reason:
         raise ToolError(f"Command blocked by security policy — {reason}")
 
-    work_dir = cwd or str(config.PROJECT_ROOT)
+    work_dir = cwd or str(policy.sandbox_root)
     if ctx:
         await ctx.info(f"Running: {command!r} in {work_dir}")
 
@@ -88,12 +87,21 @@ async def run(
             timeout=timeout,
             env={**os.environ},
         )
-        return {
-            "exit_code": result.returncode,
-            "stdout": result.stdout[:4000],
-            "stderr": result.stderr[:2000],
-            "command": command,
-        }
+        lines = [f"Command: {command}", f"Directory: {work_dir}"]
+        if result.returncode == 0:
+            lines.append("Status: success (exit code 0)")
+        else:
+            lines.append(f"Status: FAILED (exit code {result.returncode})")
+
+        if result.stdout.strip():
+            lines.append(f"\nOutput:\n{result.stdout[:4000].rstrip()}")
+        else:
+            lines.append("Output: (no stdout — output may have been redirected or command produced none)")
+
+        if result.stderr.strip():
+            lines.append(f"\nStderr:\n{result.stderr[:2000].rstrip()}")
+
+        return "\n".join(lines)
     except subprocess.TimeoutExpired:
         raise ToolError(f"Command timed out after {timeout}s: {command!r}")
 
@@ -109,7 +117,9 @@ async def which(
 ) -> dict:
     """Check whether a program is installed and return its full path."""
     path = shutil.which(name)
-    return {"name": name, "found": path is not None, "path": path}
+    if path:
+        return f"{name} is installed at: {path}"
+    return f"{name} is not installed (not found in PATH)"
 
 
 @shell_mcp.tool(
@@ -128,11 +138,13 @@ async def env(
     )
     if key:
         val = os.environ.get(key)
-        if val and _SENSITIVE.search(key):
-            val = "***masked***"
-        return {"key": key, "value": val, "set": val is not None}
+        if val is None:
+            return f"{key} is not set"
+        if _SENSITIVE.search(key):
+            return f"{key} = ***masked*** (sensitive variable)"
+        return f"{key} = {val}"
 
-    result: dict[str, str] = {}
-    for k, v in os.environ.items():
-        result[k] = "***masked***" if _SENSITIVE.search(k) else v[:200]
-    return {"count": len(result), "variables": result}
+    lines = []
+    for k, v in sorted(os.environ.items()):
+        lines.append(f"  {k} = {'***masked***' if _SENSITIVE.search(k) else v[:200]}")
+    return f"{len(lines)} environment variables:\n" + "\n".join(lines)

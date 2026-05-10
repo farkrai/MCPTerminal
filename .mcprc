@@ -12,7 +12,7 @@ allowed_tools = ["file", "git", "system", "test", "network", "shell", "docker", 
 disabled_tools = []
 
 [confirmations]
-confirm_required = ["file.write", "file.delete", "git.commit", "system.kill_process", "shell.run", "db.execute", "docker.stop", "memory.delete"]
+confirm_required = ["file.write", "file.delete", "git.commit", "git.push", "system.kill_process", "shell.run", "db.execute", "docker.stop", "memory.delete"]
 confirm_all_destructive = true
 
 [behavior]

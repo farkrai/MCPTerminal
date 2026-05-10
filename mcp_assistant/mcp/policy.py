@@ -1,4 +1,5 @@
 from __future__ import annotations
+import dataclasses
 import fnmatch
 import tomllib
 from dataclasses import dataclass, field
@@ -111,3 +112,12 @@ class PolicyConfig:
         if path.exists():
             return cls.load(path)
         return cls.default()
+
+    def reload(self, path: Path) -> None:
+        """Reload settings from *path* into this instance in-place.
+
+        Mutates self so all existing import references stay valid.
+        """
+        fresh = PolicyConfig.load(path)
+        for f in dataclasses.fields(fresh):
+            setattr(self, f.name, getattr(fresh, f.name))
