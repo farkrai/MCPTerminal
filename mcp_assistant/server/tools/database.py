@@ -13,7 +13,7 @@ Safety model
 from __future__ import annotations
 import sqlite3
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
@@ -118,12 +118,12 @@ async def schema(
 )
 async def query(
     path: Annotated[str, "Path to the SQLite database file"],
-    sql: Annotated[str, "SELECT statement to execute"],
-    params: Annotated[list, "Positional query parameters (? placeholders)"] = None,
-    limit: Annotated[int, "Maximum rows to return"] = 100,
+    sql: Annotated[str, "SELECT (or WITH) statement only — no INSERT/UPDATE/DELETE"],
+    params: Annotated[Optional[list], "Optional list of ? placeholder values. Omit if none."] = None,
+    limit: Annotated[int, "Max rows to return (default 100). Only valid on db_query, NOT db_execute."] = 100,
     ctx: Context = None,
 ) -> dict:
-    """Execute a read-only SELECT query and return rows as a list of dicts."""
+    """Execute a read-only SELECT query and return rows as a list of dicts. Use db_execute for writes."""
     if not _is_select(sql):
         raise ToolError("db_query only allows SELECT statements. Use db_execute for DML.")
     if ctx:
@@ -145,13 +145,16 @@ async def query(
 )
 async def execute(
     path: Annotated[str, "Path to the SQLite database file"],
-    sql: Annotated[str, "SQL statement to execute (INSERT, UPDATE, DELETE, CREATE, DROP)"],
-    params: Annotated[list, "Positional parameters (? placeholders)"] = None,
-    dry_run: Annotated[bool, "Preview statement without committing"] = False,
+    sql: Annotated[str, "SQL statement to execute (INSERT, UPDATE, DELETE, CREATE, DROP). Do NOT use SELECT — use db_query for reads."],
+    params: Annotated[Optional[list], "Optional list of positional ? placeholder values, e.g. ['Alice', 'alice@test.com']. Omit if the SQL has no placeholders."] = None,
+    dry_run: Annotated[bool, "If true, preview without committing. No 'limit' parameter exists on this tool."] = False,
     ctx: Context = None,
 ) -> dict:
-    """Execute a write SQL statement (INSERT/UPDATE/DELETE/CREATE/DROP).
+    """Execute a write SQL statement (INSERT/UPDATE/DELETE/CREATE/DROP). No limit parameter.
 
+    - sql: full SQL string with literal values or ? placeholders
+    - params: list of values for ? placeholders, or omit entirely
+    - dry_run: set True to preview without writing
     Changes are rolled back automatically when dry_run=True.
     """
     if _is_select(sql):
