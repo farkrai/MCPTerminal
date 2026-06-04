@@ -67,7 +67,7 @@ async def run(
     Blocked: rm -rf /, fork bombs, disk wipes, pipe-to-shell, shutdown commands.
     """
     if policy.dry_run_mode or dry_run:
-        return f"[DRY RUN] Would run: {command}\nDirectory: {cwd or policy.sandbox_root}"
+        return {"dry_run": True, "message": f"[DRY RUN] Would run: {command}", "directory": str(cwd or policy.sandbox_root)}
 
     reason = _is_blocked(command)
     if reason:
@@ -101,7 +101,14 @@ async def run(
         if result.stderr.strip():
             lines.append(f"\nStderr:\n{result.stderr[:2000].rstrip()}")
 
-        return "\n".join(lines)
+        return {
+            "command": command,
+            "directory": work_dir,
+            "status": "success" if result.returncode == 0 else "failed",
+            "exit_code": result.returncode,
+            "stdout": result.stdout[:4000].rstrip() if result.stdout.strip() else "",
+            "stderr": result.stderr[:2000].rstrip() if result.stderr.strip() else "",
+        }
     except subprocess.TimeoutExpired:
         raise ToolError(f"Command timed out after {timeout}s: {command!r}")
 
